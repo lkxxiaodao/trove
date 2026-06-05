@@ -82,9 +82,6 @@ InfoVault 是一款基于 **Python + PySide6 (Qt6)** 开发的 Windows 桌面效
 ### 从源码运行
 
 ```bash
-# 克隆仓库
-git clone https://github.com/your-username/InfoVault.git
-
 # 进入源码目录
 cd InfoVault
 
