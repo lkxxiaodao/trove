@@ -1,0 +1,10 @@
+{
+  "text": {
+    "key": "enc:1q/Nb/ITCpm2lX/fl6nhBjiLwx7L5Bz9E0Vu7Frs96+HP3T5WUmiHBnZmpNZssfCyirSE9EDSelZvi1h7sR6bSg=",
+    "url": "https://api.deepseek.com/chat/completions",
+    "model": "deepseek-chat",
+    "provider": "deepseek",
+    "extraParams": {}
+  },
+  "updatedAt": 1780581008788
+}
