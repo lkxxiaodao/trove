@@ -229,7 +229,7 @@ class ClipboardMonitor(QObject):
         if self._running:
             return
         self._hidden_window = QWidget()
-        self._hidden_window.setWindowTitle("InfoVault-ClipMonitor")
+        self._hidden_window.setWindowTitle("trove-ClipMonitor")
         self._native_filter = _ClipboardNativeFilter(self)
         QApplication.instance().installNativeEventFilter(self._native_filter)
         hwnd = int(self._hidden_window.winId())

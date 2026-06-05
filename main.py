@@ -1,7 +1,4 @@
-"""InfoVault 应用入口。
 
-初始化 QApplication、配置、数据库、各模块，启动主窗口。
-"""
 
 import sys
 import os
@@ -24,7 +21,7 @@ def setup_logging(log_dir: str) -> logging.Logger:
     """配置日志系统，输出到文件和控制台。"""
     import os
 
-    logger = logging.getLogger("InfoVault")
+    logger = logging.getLogger("trove")
     logger.setLevel(logging.DEBUG)
 
     os.makedirs(log_dir, exist_ok=True)
@@ -48,8 +45,8 @@ def setup_logging(log_dir: str) -> logging.Logger:
 def main() -> int:
     _suppress_shiboken_noise()
     app = QApplication(sys.argv)
-    app.setApplicationName("InfoVault")
-    app.setOrganizationName("InfoVault")
+    app.setApplicationName("trove")
+    app.setOrganizationName("trove")
 
     # 应用图标
     icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
@@ -61,7 +58,7 @@ def main() -> int:
     config = AppConfig.instance()
     ensure_directories(config)
     log = setup_logging(config.LOG_DIR)
-    log.info("InfoVault 启动")
+    log.info("trove 启动")
     log.info(f"数据目录: {config.DATA_DIR}")
 
     # ---- M01: 数据库初始化 ----
@@ -209,7 +206,7 @@ def main() -> int:
     clipboard_db.close()
     notes_db.close()
     tasks_db.close()
-    log.info("InfoVault 退出")
+    log.info("trove 退出")
     return exit_code
 
 

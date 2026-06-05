@@ -1,9 +1,9 @@
-# InfoVault 项目依赖
+# trove 项目依赖
 # 建议使用 Python 3.11 ~ 3.12（PySide6 对 3.13 的 DLL 兼容性不稳定）
 #
 # 创建环境：
-#   conda create -n infovault python=3.12
-#   conda activate infovault
+#   conda create -n trove python=3.12
+#   conda activate trove
 #   pip install -r requirements.txt
 
 # ===== GUI 框架 =====

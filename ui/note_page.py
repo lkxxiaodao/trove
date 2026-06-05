@@ -16,7 +16,7 @@ from ui.widgets.note_card import NoteCard
 from ui.widgets.note_editor import NoteEditor
 from ui.widgets.note_float import NoteFloatWindow
 
-log = logging.getLogger("InfoVault.note")
+log = logging.getLogger("trove.note")
 
 # 预定义颜色（与 NoteEditor / NoteFloatWindow 保持一致）
 FILTER_COLORS = {

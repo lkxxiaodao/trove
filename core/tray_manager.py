@@ -92,7 +92,7 @@ class TrayManager(QObject):
                 main_window.style().StandardPixmap.SP_FileDialogListView
             )
             self._tray.setIcon(icon)
-        self._tray.setToolTip("InfoVault")
+        self._tray.setToolTip("trove")
 
         menu = QMenu()
 
@@ -140,7 +140,7 @@ class TrayManager(QObject):
             self.unregister_all()
 
         self._hotkey_window = QWidget()
-        self._hotkey_window.setWindowTitle("InfoVault-Hotkey")
+        self._hotkey_window.setWindowTitle("trove-Hotkey")
         self._native_filter = _HotkeyNativeFilter(self)
         QApplication.instance().installNativeEventFilter(self._native_filter)
 

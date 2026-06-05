@@ -1,4 +1,4 @@
-"""InfoVault 全局配置管理。
+"""trove 全局配置管理。
 
 通过 JSON 文件持久化用户偏好，提供默认值和运行时路径。
 当 PySide6 可用时，将自动切换为 QSettings 后端。
@@ -9,7 +9,7 @@ import json
 import threading
 import logging
 
-log = logging.getLogger("InfoVault.config")
+log = logging.getLogger("trove.config")
 
 
 # ---- 配置后端接口 ----
@@ -76,7 +76,7 @@ class AppConfig:
 
     def __init__(self):
         appdata = os.getenv("APPDATA", os.path.expanduser("~"))
-        base_dir = os.path.join(appdata, "InfoVault")
+        base_dir = os.path.join(appdata, "trove")
         settings_path = os.path.join(base_dir, "settings.json")
         self._backend = _JsonBackend(settings_path)
         self._init_paths(base_dir)

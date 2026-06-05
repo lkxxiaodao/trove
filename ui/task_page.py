@@ -17,7 +17,7 @@ from core.task_scheduler import TaskScheduler
 from ui.widgets.task_editor import TaskEditor
 from ui.widgets.task_reminder_popup import TaskReminderPopup
 
-log = logging.getLogger("InfoVault.task")
+log = logging.getLogger("trove.task")
 
 
 class TaskPage(QWidget):

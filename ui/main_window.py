@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, close_to_tray: bool = False):
         super().__init__()
-        self.setWindowTitle("InfoVault")
+        self.setWindowTitle("trove")
         self.resize(960, 680)
         self.setMinimumSize(720, 480)
 

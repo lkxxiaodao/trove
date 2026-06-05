@@ -11,7 +11,7 @@ import threading
 import logging
 from queue import Queue, Empty
 
-log = logging.getLogger("InfoVault.db")
+log = logging.getLogger("trove.db")
 
 
 # ============================================================

@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from core.task_manager import TaskStore
 
-log = logging.getLogger("InfoVault.scheduler")
+log = logging.getLogger("trove.scheduler")
 
 
 class RuleParser:
