@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🗄️ InfoVault
+# 🗄️ trove
 
 **Windows 离线效率工具 — 剪贴板历史 · 微笔记 · 定时任务，三位一体**
 
@@ -10,9 +10,9 @@
 
 ## 📖 简介
 
-InfoVault 是一款基于 **Python + PySide6 (Qt6)** 开发的 Windows 桌面效率工具，完全离线运行，数据全部存储在本地 SQLite 数据库中。它集成了**剪贴板历史管理 (ClipCache)**、**微笔记卡片 (NoteNest)** 和**本地定时调度 (TaskFlow)** 三大模块，帮你高效管理日常工作流。
+trove 是一款基于 **Python + PySide6 (Qt6)** 开发的 Windows 桌面效率工具，完全离线运行，数据全部存储在本地 SQLite 数据库中。它集成了**剪贴板历史管理 (ClipCache)**、**微笔记卡片 (NoteNest)** 和**本地定时调度 (TaskFlow)** 三大模块，帮你高效管理日常工作流。
 
-无论你是每天在海量文本碎片中切换，还是习惯随手记录灵感，抑或需要定时提醒与自动化执行任务，InfoVault 都能一站式满足你。
+无论你是每天在海量文本碎片中切换，还是习惯随手记录灵感，抑或需要定时提醒与自动化执行任务，trove 都能一站式满足你。
 
 ---
 
@@ -82,11 +82,8 @@ InfoVault 是一款基于 **Python + PySide6 (Qt6)** 开发的 Windows 桌面效
 ### 从源码运行
 
 ```bash
-# 克隆仓库
-git clone https://github.com/your-username/InfoVault.git
-
 # 进入源码目录
-cd InfoVault
+cd trove
 
 # 安装依赖
 pip install -r requirements.txt
@@ -99,7 +96,7 @@ python main.py
 ## 🏗️ 项目架构
 
 ```
-InfoVault/
+trove/
 ├── main.py                   # 应用入口：初始化应用、组装所有模块
 ├── config.py                 # 全局配置（单例 AppConfig，JSON 后端持久化）
 ├── requirements.txt          # 依赖清单
