@@ -3,12 +3,29 @@
 始终置顶、无边框、可拖拽移动、可自由调整大小。
 """
 
+import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
-    QPushButton, QSizeGrip, QApplication,
+    QPushButton, QSizeGrip, QApplication, QColorDialog, QMenu,
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QRect
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPalette
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QEvent
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPalette, QPixmap
+
+from config import AppConfig
+
+# 资源路径
+_ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
+
+
+# 辅助：判断内容是否为 HTML
+def _is_html(content: str) -> bool:
+    return bool(content) and (
+        content.strip().startswith("<!DOCTYPE")
+        or content.strip().startswith("<html")
+        or "<img" in content
+        or "<p" in content
+        or "<div" in content
+    )
 
 
 class NoteFloatWindow(QWidget):
@@ -22,16 +39,15 @@ class NoteFloatWindow(QWidget):
     unfloated = Signal(int)
     edit_requested = Signal(int)
 
-    COLORS = {
-        "默认": "#FFFFFF",
-        "黄色": "#FFF9C4",
-        "绿色": "#C8E6C9",
-        "蓝色": "#BBDEFB",
-        "粉色": "#F8BBD0",
-        "紫色": "#E1BEE7",
-        "灰色": "#F5F5F5",
-        "橙色": "#FFE0B2",
-    }
+    @property
+    def COLORS(self):
+        config = AppConfig.instance()
+        return {c["name"]: c["bg"] for c in config.NOTE_PRESET_COLORS}
+
+    @property
+    def FONT_COLORS(self):
+        config = AppConfig.instance()
+        return {c["name"]: c["font"] for c in config.NOTE_PRESET_COLORS}
 
     def __init__(self, note_data: dict, font_size: int = 14, parent=None):
         flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
@@ -44,6 +60,7 @@ class NoteFloatWindow(QWidget):
         self._resize_edge = None
         self._resize_start_geo = None
         self._resize_start_pos = None
+        self._is_locked = False  # 默认解锁状态
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setMinimumSize(180, 120)
@@ -89,53 +106,83 @@ class NoteFloatWindow(QWidget):
         self._title_label.setCursor(Qt.CursorShape.SizeAllCursor)
         tb_layout.addWidget(self._title_label, 1)
 
-        # 颜色切换按钮
-        for name, color in list(self.COLORS.items())[:5]:
+        # 颜色切换按钮（前 5 个预设）
+        colors = list(self.COLORS.items())
+        for idx, (name, color) in enumerate(colors[:5]):
             btn = QPushButton()
             btn.setFixedSize(14, 14)
+            font_c = self.FONT_COLORS.get(name, "#000000")
             btn.setStyleSheet(f"background: {color}; border: 1px solid #bbb; border-radius: 3px;")
-            btn.setToolTip(name)
-            btn.clicked.connect(lambda checked, c=color: self._set_color(c))
+            btn.setToolTip(f"{name} (字体: {font_c})")
+            btn.clicked.connect(lambda checked, c=color, fc=font_c: self._set_color_with_font(c, fc))
             tb_layout.addWidget(btn)
 
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setStyleSheet(
-            "QPushButton {"
-            "  border: none;"
-            "  font-size: 16px;"
-            "  font-weight: bold;"
-            "  color: #bbb;"
-            "  background: transparent;"
-            "  border-radius: 6px;"
-            "}"
-            "QPushButton:hover {"
-            "  background: rgba(211, 47, 47, 0.15);"
-            "  color: #d32f2f;"
-            "}"
+        # 自定义颜色按钮
+        custom_btn = QPushButton("🎨")
+        custom_btn.setFixedSize(18, 18)
+        custom_btn.setStyleSheet(
+            "QPushButton { border: none; font-size: 12px; padding: 0; }"
+            "QPushButton:hover { background: rgba(0,0,0,0.1); border-radius: 3px; }"
         )
+        custom_btn.setToolTip("自定义背景色")
+        custom_btn.clicked.connect(self._on_custom_color)
+        tb_layout.addWidget(custom_btn)
+
+        # 关闭按钮（QLabel 模拟，确保 ✕ 正常显示）
+        close_btn = QLabel("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setToolTip("关闭悬浮")
-        close_btn.clicked.connect(self._on_unfloat)
+        close_btn.setStyleSheet("""
+            QLabel {
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+                color: #999;
+                background: transparent;
+                padding: 2px;
+            }
+            QLabel:hover {
+                color: #d32f2f;
+                background: rgba(211, 47, 47, 0.1);
+                border-radius: 4px;
+            }
+        """)
+        close_btn.mousePressEvent = lambda e: self._on_unfloat()
         tb_layout.addWidget(close_btn)
 
         main_layout.addWidget(title_bar)
 
         # ---- 内容区 ----
         self._content_edit = QTextEdit()
-        self._content_edit.setReadOnly(True)
+        self._content_edit.setReadOnly(self._is_locked)  # 默认 False = 可编辑
         self._content_edit.setFrameShape(QTextEdit.Shape.NoFrame)
         self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._content_edit.setStyleSheet("background: transparent; padding: 6px 10px;")
+        self._content_edit.setStyleSheet("""
+            background: transparent;
+            padding: 6px 10px;
+        """)
+        # 图片自适应
+        self._content_edit.document().setDefaultStyleSheet("img { max-width: 100%; height: auto; }")
         self._content_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._content_edit.customContextMenuRequested.connect(self._on_context_menu)
         main_layout.addWidget(self._content_edit, 1)
 
-        # ---- 底部：标签 + 调整手柄 ----
+        # ---- 底部：锁 + 标签 + 调整手柄 ----
         bottom_bar = QHBoxLayout()
         bottom_bar.setContentsMargins(8, 2, 4, 4)
         bottom_bar.setSpacing(4)
+
+        # 锁 / 解锁按钮
+        self._lock_btn = QLabel()
+        self._lock_btn.setFixedSize(20, 20)
+        self._lock_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._lock_btn.setToolTip("解锁状态 — 点击锁定（锁定后内容不可编辑）")
+        self._lock_btn.mousePressEvent = self._on_lock_toggle
+        bottom_bar.addWidget(self._lock_btn)
 
         self._tag_label = QLabel()
         self._tag_label.setMinimumWidth(40)
@@ -154,11 +201,19 @@ class NoteFloatWindow(QWidget):
         bottom_bar.addWidget(grip)
         main_layout.addLayout(bottom_bar)
 
+        # 刷新锁图标
+        self._refresh_lock_icon()
+
     def _apply_data(self):
         self._title_label.setText(self._note_data.get("title", "未命名"))
-        self._content_edit.setPlainText(self._note_data.get("content", ""))
+        content = self._note_data.get("content", "")
+        if content and _is_html(content):
+            self._content_edit.setHtml(content)
+        else:
+            self._content_edit.setPlainText(content)
         color = self._note_data.get("color", "#FFFFFF")
-        self._apply_bg_color(color)
+        font_color = self._note_data.get("font_color", "#000000")
+        self._apply_bg_color(color, font_color)
 
         # 标签（最多 1 个）
         tags = self._note_data.get("tags") or []
@@ -168,7 +223,7 @@ class NoteFloatWindow(QWidget):
         else:
             self._tag_label.hide()
 
-    def _apply_bg_color(self, color: str):
+    def _apply_bg_color(self, color: str, font_color: str = "#000000"):
         self._color_dot.setStyleSheet(f"border-radius: 5px; background: {color};")
         self.setStyleSheet(f"""
             #NoteFloatWindow {{
@@ -177,11 +232,28 @@ class NoteFloatWindow(QWidget):
                 border-radius: 6px;
             }}
         """)
-        self._content_edit.setStyleSheet(f"background: transparent; padding: 6px 10px;")
+        self._content_edit.setStyleSheet(f"""
+            background: transparent;
+            padding: 6px 10px;
+            color: {font_color};
+        """)
 
     def _set_color(self, color: str):
         self._note_data["color"] = color
-        self._apply_bg_color(color)
+        self._apply_bg_color(color, self._note_data.get("font_color", "#000000"))
+
+    def _set_color_with_font(self, bg: str, font: str):
+        self._note_data["color"] = bg
+        self._note_data["font_color"] = font
+        self._apply_bg_color(bg, font)
+
+    def _on_custom_color(self):
+        """打开取色器选择自定义背景色。"""
+        current = QColor(self._note_data.get("color", "#FFFFFF"))
+        color = QColorDialog.getColor(current, self, "选择背景颜色")
+        if color.isValid():
+            self._note_data["color"] = color.name()
+            self._apply_bg_color(color.name(), self._note_data.get("font_color", "#000000"))
 
     def _show_smart(self):
         """在屏幕右侧中间区域显示。"""
@@ -208,20 +280,54 @@ class NoteFloatWindow(QWidget):
 
     # ---- 右键菜单 ----
     def _on_context_menu(self, pos):
-        from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
         edit_action = menu.addAction("编辑")
+        font_color_action = menu.addAction("更改字体颜色")
         menu.addSeparator()
         unfollow_action = menu.addAction("取消悬浮")
         action = menu.exec(self._content_edit.mapToGlobal(pos))
         if action == edit_action:
             self.edit_requested.emit(self._note_id)
+        elif action == font_color_action:
+            current = QColor(self._note_data.get("font_color", "#000000"))
+            color = QColorDialog.getColor(current, self, "选择字体颜色")
+            if color.isValid():
+                self._note_data["font_color"] = color.name()
+                self._apply_bg_color(self._note_data.get("color", "#FFFFFF"), color.name())
         elif action == unfollow_action:
             self._on_unfloat()
 
     # ---- 操作 ----
     def _on_unfloat(self):
         self.unfloated.emit(self._note_id)
+
+    # ---- 锁 / 解锁 ----
+    def _refresh_lock_icon(self):
+        """根据锁定状态刷新锁图标。"""
+        icon_name = "锁定.png" if self._is_locked else "解锁.png"
+        icon_path = os.path.join(_ASSETS_DIR, icon_name)
+        if os.path.exists(icon_path):
+            pixmap = QPixmap(icon_path).scaled(
+                16, 16, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self._lock_btn.setPixmap(pixmap)
+        else:
+            # 备用：用文字显示
+            self._lock_btn.setText("🔒" if self._is_locked else "🔓")
+
+        self._lock_btn.setToolTip(
+            "锁定状态 — 点击解锁（内容不可编辑）" if self._is_locked
+            else "解锁状态 — 点击锁定（内容可编辑）"
+        )
+
+    def _on_lock_toggle(self, event: QMouseEvent):
+        """切换锁定 / 解锁状态。"""
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._is_locked = not self._is_locked
+        self._content_edit.setReadOnly(self._is_locked)
+        self._refresh_lock_icon()
 
     def update_content(self, note_data: dict, font_size: int = None):
         """外部更新笔记内容。"""

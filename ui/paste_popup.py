@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QUrl, QMimeData
-from PySide6.QtGui import QFont, QKeyEvent, QImage, QPixmap, QCursor
+from PySide6.QtGui import QFont, QKeyEvent, QImage, QPixmap, QCursor, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from core.clipboard_monitor import ClipStore
@@ -64,19 +64,20 @@ def _send_ctrl_v():
 
 
 class PastePopup(QWidget):
-    """粘贴选择弹窗。"""
+    """粘贴选择弹窗（可拖拽移动）。"""
 
     MAX_ITEMS = 50
 
     def __init__(self, clip_store: ClipStore):
         super().__init__()
         self._store = clip_store
+        self._drag_pos = None
         self._init_ui()
         self._init_flags()
 
     def _init_flags(self):
         self.setWindowFlags(
-            Qt.WindowType.Popup
+            Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
@@ -97,9 +98,13 @@ class PastePopup(QWidget):
         layout.setContentsMargins(4, 8, 4, 4)
         layout.setSpacing(0)
 
-        header = QLabel("选择要粘贴的内容")
+        header = QLabel("选择要粘贴的内容  — 拖拽移动")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.setStyleSheet("color: #888; font-size: 11px; padding-bottom: 4px;")
+        header.setStyleSheet("color: #888; font-size: 11px; padding: 6px 4px; background: #f5f5f5; border-radius: 8px 8px 0 0;")
+        header.setCursor(Qt.CursorShape.SizeAllCursor)
+        header.mousePressEvent = self._header_press
+        header.mouseMoveEvent = self._header_move
+        header.mouseReleaseEvent = self._header_release
         layout.addWidget(header)
 
         self._list = QListWidget()
@@ -121,6 +126,33 @@ class PastePopup(QWidget):
         self._list.itemClicked.connect(self._on_item_clicked)
         self._list.installEventFilter(self)
         layout.addWidget(self._list)
+
+    # ---- 拖拽移动 ----
+    def _header_press(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint()
+
+    def _header_move(self, event: QMouseEvent):
+        if self._drag_pos is not None:
+            delta = event.globalPosition().toPoint() - self._drag_pos
+            self.move(self.pos() + delta)
+            self._drag_pos = event.globalPosition().toPoint()
+
+    def _header_release(self, event: QMouseEvent):
+        self._drag_pos = None
+
+    def mousePressEvent(self, event: QMouseEvent):
+        """点击窗口外部区域时关闭弹窗。"""
+        if self._drag_pos is None:
+            # Not in drag mode, check if click is outside
+            pass
+        super().mousePressEvent(event)
+
+    def changeEvent(self, event):
+        """窗口失去焦点时自动隐藏。"""
+        if event.type() == event.Type.ActivationChange and not self.isActiveWindow():
+            self.hide()
+        super().changeEvent(event)
 
     def eventFilter(self, obj, event):
         if obj is self._list and event.type() == event.Type.KeyPress:

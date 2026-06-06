@@ -5,6 +5,7 @@ import os
 import logging
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
+from PySide6.QtCore import QTimer
 from config import AppConfig, ensure_directories
 
 
@@ -118,10 +119,7 @@ def main() -> int:
     window.switch_to_page("clip")
 
     # ---- M09: 设置页面（后注册，需拿到其它模块引用） ----
-    def on_privacy_filters_changed(patterns):
-        clip_monitor.set_privacy_filters(patterns)
-
-    settings_page = create_settings_page(config, on_privacy_filters_changed)
+    settings_page = create_settings_page(config)
     settings_page.close_to_tray_changed.connect(window.set_close_to_tray)
     settings_page.note_font_size_changed.connect(note_page.set_font_size)
     window.register_page("settings", settings_page)
@@ -192,6 +190,17 @@ def main() -> int:
     backup_mgr.start_auto_backup()
     log.info("自动备份已启动")
 
+    # ---- 剪贴板自动清理（超过 N 天） ----
+    def _auto_delete_old_clips():
+        days = config.CLIP_AUTO_DELETE_DAYS
+        if days > 0:
+            clip_store.delete_old_entries(days)
+            clip_store.enforce_cap(config.CLIP_MAX_HISTORY)
+
+    clip_cleanup_timer = QTimer()
+    clip_cleanup_timer.timeout.connect(_auto_delete_old_clips)
+    clip_cleanup_timer.start(3600000)  # 每小时检查一次
+
     # 显示主窗口
     window.show()
     log.info("主窗口已显示")
@@ -201,6 +210,7 @@ def main() -> int:
     note_page.close_all_floats()
     task_scheduler.stop()
     backup_mgr.stop_auto_backup()
+    clip_cleanup_timer.stop()
     clip_monitor.stop()
     tray_mgr.shutdown()
     clipboard_db.close()

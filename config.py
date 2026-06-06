@@ -11,6 +11,21 @@ import logging
 
 log = logging.getLogger("trove.config")
 
+# ============================================================
+# 笔记预设颜色（名称 → (背景色, 字体色)）
+# 可通过 QColorDialog 自定义，用户修改后保存到 settings.json
+# ============================================================
+NOTE_DEFAULT_COLORS = [
+    {"name": "默认", "bg": "#FFFFFF", "font": "#000000"},
+    {"name": "黄色", "bg": "#FFF9C4", "font": "#333333"},
+    {"name": "绿色", "bg": "#C8E6C9", "font": "#1B5E20"},
+    {"name": "蓝色", "bg": "#BBDEFB", "font": "#0D47A1"},
+    {"name": "粉色", "bg": "#F8BBD0", "font": "#880E4F"},
+    {"name": "紫色", "bg": "#E1BEE7", "font": "#4A148C"},
+    {"name": "灰色", "bg": "#F5F5F5", "font": "#424242"},
+    {"name": "橙色", "bg": "#FFE0B2", "font": "#BF360C"},
+]
+
 
 # ---- 配置后端接口 ----
 class _JsonBackend:
@@ -101,6 +116,9 @@ class AppConfig:
         self.THEME = b.get("ui/theme", "light_blue.xml")
         self.PRIVACY_FILTERS = b.get("privacy/filters", [])
         self.NOTE_FONT_SIZE = int(b.get("note/font_size", 14))
+        self.AUTO_START = str(b.get("ui/auto_start", "false")).lower() == "true"
+        self.CLIP_AUTO_DELETE_DAYS = int(b.get("clip/auto_delete_days", 0))
+        self.NOTE_PRESET_COLORS = b.get("note/preset_colors", NOTE_DEFAULT_COLORS)
 
     # ---- 持久化 ----
     def save(self):
@@ -115,6 +133,9 @@ class AppConfig:
         b.set("ui/theme", self.THEME)
         b.set("privacy/filters", self.PRIVACY_FILTERS)
         b.set("note/font_size", self.NOTE_FONT_SIZE)
+        b.set("ui/auto_start", str(self.AUTO_START).lower())
+        b.set("clip/auto_delete_days", self.CLIP_AUTO_DELETE_DAYS)
+        b.set("note/preset_colors", self.NOTE_PRESET_COLORS)
         b.save()
 
     # ---- 便捷属性 ----

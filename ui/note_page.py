@@ -15,20 +15,19 @@ from ui.widgets.card_flow import CardFlowWidget
 from ui.widgets.note_card import NoteCard
 from ui.widgets.note_editor import NoteEditor
 from ui.widgets.note_float import NoteFloatWindow
+from config import AppConfig
 
 log = logging.getLogger("trove.note")
 
-# 预定义颜色（与 NoteEditor / NoteFloatWindow 保持一致）
-FILTER_COLORS = {
-    "默认": "#FFFFFF",
-    "黄色": "#FFF9C4",
-    "绿色": "#C8E6C9",
-    "蓝色": "#BBDEFB",
-    "粉色": "#F8BBD0",
-    "紫色": "#E1BEE7",
-    "灰色": "#F5F5F5",
-    "橙色": "#FFE0B2",
-}
+# 从配置中获取颜色（向后兼容：提供 bg 色映射）
+def _get_filter_colors():
+    config = AppConfig.instance()
+    return {c["name"]: c["bg"] for c in config.NOTE_PRESET_COLORS}
+
+
+def _get_font_colors():
+    config = AppConfig.instance()
+    return {c["name"]: c["font"] for c in config.NOTE_PRESET_COLORS}
 
 
 class NotePage(QWidget):
@@ -214,10 +213,11 @@ class NotePage(QWidget):
         self._tag_bar.addWidget(sep2)
 
         # 颜色筛选按钮
-        for name, color in FILTER_COLORS.items():
+        filter_colors = _get_filter_colors()
+        for name, color in filter_colors.items():
             btn = QPushButton()
             btn.setFixedSize(20, 20)
-            btn.setToolTip(f"颜色筛选: {name}")
+            btn.setToolTip(f"颜色筛选: {name} ({color})")
             btn.setCheckable(True)
             btn.setChecked(color == self._selected_color)
             border = "3px solid #1a73e8" if color == self._selected_color else "1px solid #aaa"
@@ -422,11 +422,15 @@ class NotePage(QWidget):
         dlg_layout.addWidget(QLabel("选择颜色："))
         btn_layout = QHBoxLayout()
         chosen_color = [None]  # 用列表在闭包中可变
+        chosen_font = ["#000000"]
 
-        for name, color in FILTER_COLORS.items():
+        filter_colors = _get_filter_colors()
+        font_colors = _get_font_colors()
+        for name, color in filter_colors.items():
             btn = QPushButton()
             btn.setFixedSize(28, 28)
-            btn.setToolTip(name)
+            font_c = font_colors.get(name, "#000000")
+            btn.setToolTip(f"{name} (字体: {font_c})")
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background: {color};
@@ -437,7 +441,7 @@ class NotePage(QWidget):
                     border-color: #888;
                 }}
             """)
-            btn.clicked.connect(lambda checked, c=color: [chosen_color.__setitem__(0, c), dlg.accept()])
+            btn.clicked.connect(lambda checked, c=color, fc=font_c: [chosen_color.__setitem__(0, c), chosen_font.__setitem__(0, fc), dlg.accept()])
             btn_layout.addWidget(btn)
         btn_layout.addStretch()
         dlg_layout.addLayout(btn_layout)
@@ -446,7 +450,7 @@ class NotePage(QWidget):
             return
 
         for nid in selected:
-            self._store.update(nid, color=chosen_color[0])
+            self._store.update(nid, color=chosen_color[0], font_color=chosen_font[0])
         # 同步更新悬浮窗
         for nid in selected:
             self._update_float_window(nid)

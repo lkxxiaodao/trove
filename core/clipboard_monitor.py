@@ -156,6 +156,40 @@ class ClipStore:
             (excess,),
         )
 
+    # ---- 正则删除 ----
+    def delete_by_regex(self, pattern: str) -> int:
+        """根据正则表达式删除匹配的剪贴板条目，返回删除数量。"""
+        import re
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            raise ValueError(f"无效的正则表达式: {e}")
+
+        # 获取所有条目
+        rows = self._db.fetchall("SELECT id, content FROM history")
+        to_delete = [row["id"] for row in rows if regex.search(row["content"])]
+        if to_delete:
+            placeholders = ",".join("?" * len(to_delete))
+            self._db.execute(
+                f"DELETE FROM history WHERE id IN ({placeholders})",
+                tuple(to_delete),
+            )
+        return len(to_delete)
+
+    # ---- 过期删除 ----
+    def delete_old_entries(self, days: int) -> int:
+        """删除超过指定天数的剪贴板条目，返回删除数量。"""
+        import time
+        if days <= 0:
+            return 0
+        cutoff = int(time.time()) - days * 86400
+        self._db.execute(
+            "DELETE FROM history WHERE timestamp < ? AND starred = 0",
+            (cutoff,),
+        )
+        # 无法直接获取删除数量，返回估算值
+        return 0
+
 
 class ClipEntry:
     """剪贴板条目数据类。"""

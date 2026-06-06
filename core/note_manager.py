@@ -35,7 +35,7 @@ class NoteStore:
 
     def update(self, note_id: int, **fields):
         """更新笔记字段。"""
-        allowed = {"title", "content", "color", "sort_order"}
+        allowed = {"title", "content", "color", "font_color", "sort_order"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return

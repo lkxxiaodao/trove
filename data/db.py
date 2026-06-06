@@ -76,6 +76,9 @@ NotesMigrations = {
     3: [
         "ALTER TABLE notes ADD COLUMN is_floating INTEGER DEFAULT 0",
     ],
+    4: [
+        "ALTER TABLE notes ADD COLUMN font_color TEXT DEFAULT '#000000'",
+    ],
 }
 
 TaskMigrations = {

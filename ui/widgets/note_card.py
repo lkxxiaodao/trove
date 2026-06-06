@@ -5,7 +5,7 @@
 
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QMouseEvent
+from PySide6.QtGui import QFont, QMouseEvent, QTextDocument
 
 
 class NoteCard(QFrame):
@@ -125,9 +125,17 @@ class NoteCard(QFrame):
         d = self._note_data
         self._title_label.setText(d.get("title") or "未命名")
         content = d.get("content") or ""
-        self._content_label.setText(content[:80] + ("..." if len(content) > 80 else ""))
+        # 如果是 HTML，用 QTextDocument 正确解析出纯文本
+        if content.strip().startswith("<!DOCTYPE") or content.strip().startswith("<html") or "<" in content:
+            doc = QTextDocument()
+            doc.setHtml(content)
+            plain = doc.toPlainText()
+            self._content_label.setText(plain[:80] + ("..." if len(plain) > 80 else ""))
+        else:
+            self._content_label.setText(content[:80] + ("..." if len(content) > 80 else ""))
 
         color = d.get("color") or "#FFFFFF"
+        font_color = d.get("font_color") or "#000000"
         self._color_bar.setStyleSheet(f"border-radius: 2px; background: {color};")
         self.setStyleSheet(f"""
             NoteCard {{
@@ -139,6 +147,9 @@ class NoteCard(QFrame):
                 border-color: #4a9eff;
             }}
         """)
+        # 应用字体颜色
+        self._title_label.setStyleSheet(f"color: {font_color};")
+        self._content_label.setStyleSheet(f"color: {font_color}; opacity: 0.7; font-size: 12px; padding-top: 2px;")
 
         self._apply_float_style()
 
