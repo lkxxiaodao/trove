@@ -183,10 +183,13 @@ class TaskScheduler(QObject):
         action_value = task.get("action_value", "") or ""
         actions = [a.strip() for a in action_type.split(",") if a.strip()]
 
-        # 解析 key|path;;key|path
+        # 解析 key|path;;key|path（兼容旧格式 ;; 和新格式 \n;;\n）
         path_map: dict[str, str] = {}
         if action_value:
-            for part in action_value.split(";;"):
+            # 先用新分隔符，失败则用旧分隔符
+            parts = action_value.split("\n;;\n") if "\n;;\n" in action_value else action_value.split(";;")
+            for part in parts:
+                part = part.strip()
                 if "|" in part:
                     k, p = part.split("|", 1)
                     path_map[k.strip()] = p.strip()
@@ -199,7 +202,8 @@ class TaskScheduler(QObject):
             value = path_map.get(act, "")
             try:
                 if act == "popup":
-                    self.remind_requested.emit(task)
+                    popup_html = path_map.get("popup", "")
+                    self.remind_requested.emit({**task, "_popup_html": popup_html})
                     self._store.log(tid, "success", "弹窗提醒已触发")
                 elif act == "open_file":
                     if value and os.path.exists(value):

@@ -477,6 +477,7 @@
    'D:\\a-conda\\envs\\infovault\\DLLs\\_sqlite3.pyd',
    'EXTENSION'),
   ('_ssl.pyd', 'D:\\a-conda\\envs\\infovault\\DLLs\\_ssl.pyd', 'EXTENSION'),
+  ('_uuid.pyd', 'D:\\a-conda\\envs\\infovault\\DLLs\\_uuid.pyd', 'EXTENSION'),
   ('_wmi.pyd', 'D:\\a-conda\\envs\\infovault\\DLLs\\_wmi.pyd', 'EXTENSION'),
   ('api-ms-win-core-console-l1-1-0.dll',
    'D:\\a-conda\\envs\\infovault\\api-ms-win-core-console-l1-1-0.dll',

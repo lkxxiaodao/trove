@@ -7,6 +7,7 @@ import os
 import sys
 import shutil
 import ctypes
+import os as _os_module
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QTextEdit,
     QPushButton, QLabel, QComboBox, QMessageBox, QDateTimeEdit,
@@ -16,6 +17,16 @@ from PySide6.QtCore import Qt, Signal, QDateTime
 
 from core.task_manager import TaskStore
 from config import AppConfig
+
+# 辅助：判断内容是否为 HTML
+def _is_html(content: str) -> bool:
+    return bool(content) and (
+        content.strip().startswith("<!DOCTYPE")
+        or content.strip().startswith("<html")
+        or "<img" in content
+        or "<p" in content
+        or "<div" in content
+    )
 
 
 def _is_admin() -> bool:
@@ -164,6 +175,9 @@ class TaskEditor(QDialog):
         btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
 
+        # 初始化显示默认规则（一次性）的 UI
+        self._on_rule_changed()
+
     # ═══════════════════════════════════════════
     # 规则 UI 构建
     # ═══════════════════════════════════════════
@@ -255,7 +269,7 @@ class TaskEditor(QDialog):
     # ═══════════════════════════════════════════
 
     def _build_action_row(self, key: str, label: str, file_filter: str | None, hint: str | None) -> QWidget:
-        """构建一个动作行：勾选框 + 路径显示 + 浏览按钮 + 可选提示。"""
+        """构建一个动作行：勾选框 + 弹出内容 / 路径选择 + 浏览按钮 + 可选提示。"""
         row = QWidget()
         rly = QVBoxLayout(row)
         rly.setContentsMargins(0, 0, 0, 0)
@@ -266,40 +280,65 @@ class TaskEditor(QDialog):
         cb.toggled.connect(lambda checked, k=key: self._on_action_toggled(k, checked))
         top.addWidget(cb)
 
-        path_edit = QLineEdit()
-        path_edit.setReadOnly(True)
-        path_edit.setPlaceholderText("未选择")
-        path_edit.setStyleSheet("background: #f5f5f5; color: #555; font-size: 11px;")
-        path_edit.hide()  # 默认不勾选时隐藏
-        top.addWidget(path_edit, 1)
+        if key == "popup":
+            # 弹窗提醒：文本编辑 + 图片插入
+            popup_edit = QTextEdit()
+            popup_edit.setPlaceholderText("弹窗提醒内容（支持插入图片）...")
+            popup_edit.setMaximumHeight(80)
+            popup_edit.setAcceptRichText(True)
+            popup_edit.hide()
+            top.addWidget(popup_edit, 1)
 
-        browse_btn = QPushButton("浏览...")
-        browse_btn.setFixedWidth(60)
-        browse_btn.hide()  # 默认不勾选时隐藏
-        browse_btn.clicked.connect(lambda checked, k=key, f=file_filter: self._on_browse_action(k, f))
-        top.addWidget(browse_btn)
+            img_btn = QPushButton("插入图片")
+            img_btn.setFixedWidth(90)
+            img_btn.setStyleSheet("font-size: 12px; padding: 2px 4px;")
+            img_btn.hide()
+            img_btn.clicked.connect(lambda: self._on_insert_popup_image(popup_edit))
+            top.addWidget(img_btn)
+
+            self._action_rows[key] = {
+                "cb": cb, "popup_edit": popup_edit, "img_btn": img_btn,
+                "browse": None, "path": None, "hint": None, "filter": None,
+            }
+        else:
+            path_edit = QLineEdit()
+            path_edit.setReadOnly(True)
+            path_edit.setPlaceholderText("未选择")
+            path_edit.setStyleSheet("background: #f5f5f5; color: #555; font-size: 11px;")
+            path_edit.hide()
+            top.addWidget(path_edit, 1)
+
+            browse_btn = QPushButton("浏览...")
+            browse_btn.setFixedWidth(72)
+            browse_btn.hide()
+            browse_btn.clicked.connect(lambda checked, k=key, f=file_filter: self._on_browse_action(k, f))
+            top.addWidget(browse_btn)
+
+            hint_lbl = None
+            if hint:
+                hint_lbl = QLabel(hint)
+                hint_lbl.setStyleSheet("color: #e67e22; font-size: 10px;")
+                hint_lbl.hide()
+                rly.addWidget(hint_lbl)
+
+            self._action_rows[key] = {
+                "cb": cb, "path": path_edit, "browse": browse_btn, "hint": hint_lbl,
+                "filter": file_filter, "popup_edit": None, "img_btn": None,
+            }
 
         rly.addLayout(top)
-
-        hint_lbl = None
-        if hint:
-            hint_lbl = QLabel(hint)
-            hint_lbl.setStyleSheet("color: #e67e22; font-size: 10px;")
-            hint_lbl.hide()
-            rly.addWidget(hint_lbl)
-
-        self._action_rows[key] = {
-            "cb": cb, "path": path_edit, "browse": browse_btn, "hint": hint_lbl,
-            "filter": file_filter,
-        }
         return row
 
     def _on_action_toggled(self, key: str, checked: bool):
         row = self._action_rows[key]
-        row["path"].setVisible(checked)
-        row["browse"].setVisible(checked)
-        if row["hint"]:
-            row["hint"].setVisible(checked)
+        if key == "popup":
+            row["popup_edit"].setVisible(checked)
+            row["img_btn"].setVisible(checked)
+        else:
+            row["path"].setVisible(checked)
+            row["browse"].setVisible(checked)
+            if row["hint"]:
+                row["hint"].setVisible(checked)
 
     def _on_browse_action(self, key: str, file_filter: str | None):
         row = self._action_rows[key]
@@ -310,6 +349,26 @@ class TaskEditor(QDialog):
             path, _ = QFileDialog.getOpenFileName(self, f"选择{row['cb'].text()}", "", flt)
         if path:
             row["path"].setText(path)
+
+    def _on_insert_popup_image(self, editor: QTextEdit):
+        """在弹窗编辑器中插入图片。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择图片", "",
+            "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+        import uuid
+        config = AppConfig.instance()
+        img_dir = _os_module.path.join(config.DATA_DIR, "images")
+        _os_module.makedirs(img_dir, exist_ok=True)
+
+        ext = _os_module.path.splitext(path)[1] or ".png"
+        dest = _os_module.path.join(img_dir, f"task_img_{uuid.uuid4().hex[:8]}{ext}")
+        shutil.copy2(path, dest)
+
+        img_path = dest.replace("\\", "/")
+        editor.textCursor().insertHtml(f'<img src="file:///{img_path}" style="max-width:100%;">')
 
     # ═══════════════════════════════════════════
     # 声音
@@ -414,23 +473,31 @@ class TaskEditor(QDialog):
                 self._use_end.setChecked(True)
                 self._end_date.setDateTime(QDateTime.fromSecsSinceEpoch(d["end_date"]))
 
-            # 动作多选 + 路径
+            # 动作多选 + 路径/弹窗内容
             actions = [a.strip() for a in d.get("action_type", "").split(",") if a.strip()]
-            # action_value 格式：key1|path1;;key2|path2
+            # action_value 格式：key1|path1;;key2|path2（弹窗为 key|HTML）
             av = d.get("action_value", "")
-            action_paths = {}
+            action_data = {}
             if av:
                 for part in av.split(";;"):
+                    part = part.strip()
                     if "|" in part:
                         k, p = part.split("|", 1)
-                        action_paths[k.strip()] = p.strip()
+                        action_data[k.strip()] = p.strip()
 
             for key in self._action_rows:
                 row = self._action_rows[key]
                 if key in actions:
                     row["cb"].setChecked(True)
-                if key in action_paths:
-                    row["path"].setText(action_paths[key])
+                if key in action_data:
+                    if key == "popup":
+                        content = action_data[key]
+                        if content and _is_html(content):
+                            row["popup_edit"].setHtml(content)
+                        elif content:
+                            row["popup_edit"].setPlainText(content)
+                    elif row.get("path"):
+                        row["path"].setText(action_data[key])
 
             # 声音
             sp = d.get("sound_path", "")
@@ -469,15 +536,16 @@ class TaskEditor(QDialog):
             QMessageBox.warning(self, "提示", "请至少选择一个触发动作")
             return
 
-        # 动作值：key1|path1;;key2|path2
+        # 动作值：key1|path1;;key2|path2（弹窗存储 HTML）
         action_parts = []
         for k in actions:
-            p = self._action_rows[k]["path"].text()
-            if k != "popup":
-                action_parts.append(f"{k}|{p}")
+            if k == "popup":
+                html = self._action_rows[k]["popup_edit"].toHtml()
+                action_parts.append(f"{k}|{html}")
             else:
-                action_parts.append(f"{k}|")
-        action_value = ";;".join(action_parts)
+                p = self._action_rows[k]["path"].text()
+                action_parts.append(f"{k}|{p}")
+        action_value = "\n;;\n".join(action_parts)
 
         sd = int(self._start_date.dateTime().toSecsSinceEpoch()) if self._use_start.isChecked() else None
         ed = int(self._end_date.dateTime().toSecsSinceEpoch()) if self._use_end.isChecked() else None

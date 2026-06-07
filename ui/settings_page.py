@@ -24,11 +24,17 @@ class _NoWheelSpinBox(QSpinBox):
         event.ignore()
 
 
+class _NoWheelComboBox(QComboBox):
+    """禁用鼠标滚轮切换选项的 QComboBox。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class SettingsPage(QWidget):
     """应用设置页面。"""
 
     close_to_tray_changed = Signal(bool)  # 关闭到托盘设置变更
-    note_font_size_changed = Signal(int)  # 笔记字体大小变更
 
     def __init__(self, config: AppConfig):
         super().__init__()
@@ -85,21 +91,24 @@ class SettingsPage(QWidget):
         # ---- 外观 ----
         ui_group = QGroupBox("外观")
         ui_form = QFormLayout(ui_group)
-        self._theme_combo = QComboBox()
-        self._theme_combo.addItems([
-            "light_blue.xml", "light_cyan.xml", "light_teal.xml",
-            "dark_blue.xml", "dark_cyan.xml", "dark_teal.xml",
-            "dark_amber.xml", "dark_pink.xml",
-        ])
+        self._theme_combo = _NoWheelComboBox()
+        themes = [
+            ("浅蓝色",   "light_blue.xml"),
+            ("浅青色",   "light_cyan.xml"),
+            ("浅墨绿色", "light_teal.xml"),
+            ("深蓝色",   "dark_blue.xml"),
+            ("深青色",   "dark_cyan.xml"),
+            ("深墨绿色", "dark_teal.xml"),
+            ("深琥珀色", "dark_amber.xml"),
+            ("深粉色",   "dark_pink.xml"),
+        ]
+        for name, filename in themes:
+            self._theme_combo.addItem(name, filename)
         ui_form.addRow("主题", self._theme_combo)
         self._close_to_tray = QCheckBox("关闭窗口时隐藏到系统托盘")
         ui_form.addRow("", self._close_to_tray)
         self._auto_start = QCheckBox("开机时自动启动")
         ui_form.addRow("", self._auto_start)
-        self._note_font_size = _NoWheelSpinBox()
-        self._note_font_size.setRange(10, 36)
-        self._note_font_size.setSuffix(" pt")
-        ui_form.addRow("笔记字体大小", self._note_font_size)
         layout.addWidget(ui_group)
 
         layout.addStretch()
@@ -130,10 +139,9 @@ class SettingsPage(QWidget):
         self._hotkey_paste.setKeySequence(QKeySequence(c.HOTKEY_PASTE))
         self._close_to_tray.setChecked(c.CLOSE_TO_TRAY)
         self._auto_start.setChecked(c.AUTO_START)
-        idx = self._theme_combo.findText(c.THEME)
+        idx = self._theme_combo.findData(c.THEME)
         if idx >= 0:
             self._theme_combo.setCurrentIndex(idx)
-        self._note_font_size.setValue(c.NOTE_FONT_SIZE)
 
     def _set_auto_start(self, enable: bool):
         """通过 Windows 注册表设置开机自启动。"""
@@ -178,18 +186,19 @@ class SettingsPage(QWidget):
         c.AUTO_START = new_auto_start
         self._set_auto_start(new_auto_start)
 
-        new_note_font_size = self._note_font_size.value()
-        c.NOTE_FONT_SIZE = new_note_font_size
-        self.note_font_size_changed.emit(new_note_font_size)
-
-        new_theme = self._theme_combo.currentText()
+        new_theme = self._theme_combo.currentData()
         theme_changed = c.THEME != new_theme
         c.THEME = new_theme
-
         c.save()
 
         if theme_changed:
-            QMessageBox.information(self, "提示", "主题将在下次启动时生效。")
+            try:
+                import qt_material
+                from PySide6.QtWidgets import QApplication
+                qt_material.apply_stylesheet(QApplication.instance(), theme=new_theme)
+            except ImportError:
+                pass
+            QMessageBox.information(self, "提示", "主题已应用。")
         else:
             QMessageBox.information(self, "提示", "设置已保存。")
 

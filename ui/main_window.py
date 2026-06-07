@@ -23,6 +23,7 @@ class MainWindow(QMainWindow):
     """
 
     close_requested = Signal()  # 关闭窗口时发射（用于清理等）
+    page_changed = Signal(str)  # 页面切换时发射，传 page_key
 
     def __init__(self, close_to_tray: bool = False):
         super().__init__()
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         """切换到指定页面。"""
         if key in self._pages:
             self.stack.setCurrentWidget(self._pages[key])
+            self.page_changed.emit(key)
             # 同步导航栏选中
             for i in range(self.nav_list.count()):
                 item = self.nav_list.item(i)

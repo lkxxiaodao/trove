@@ -1,6 +1,6 @@
 """全局搜索窗口 - SearchWindow。
 
-浮动搜索框 + 分组展示 ClipCache / NoteNest / SafePass 结果。
+浮动搜索框 + 分组展示 ClipCache / NoteNest 结果。
 点击结果可跳转到对应页面的具体条目。
 """
 
@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QLabel, QHBoxLayout, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QClipboard
+from PySide6.QtCore import Qt, Signal, QTimer, QPoint
+from PySide6.QtGui import QClipboard, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from core.search_engine import SearchEngine
@@ -29,6 +29,7 @@ class SearchWindow(QDialog):
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(self._do_search)
         self._debounce_interval = 200  # ms
+        self._drag_pos = None
 
         self.setWindowTitle("全局搜索")
         self.setWindowFlags(
@@ -44,11 +45,61 @@ class SearchWindow(QDialog):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
+        # 顶部栏：拖拽区 + 搜索图标 + 搜索框 + 关闭按钮
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(6)
+
+        # 拖拽手柄
+        drag_handle = QLabel("⋮⋮")
+        drag_handle.setFixedWidth(16)
+        drag_handle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
+        drag_handle.setToolTip("拖拽移动窗口")
+        drag_handle.setStyleSheet("color: #aaa; font-size: 10px; background: transparent;")
+        drag_handle.mousePressEvent = self._title_press
+        drag_handle.mouseMoveEvent = self._title_move
+        drag_handle.mouseReleaseEvent = self._title_release
+        top_bar.addWidget(drag_handle)
+
+        icon_label = QLabel("🔍")
+        icon_label.setFixedWidth(20)
+        # 搜索图标也作为拖拽区
+        icon_label.setCursor(Qt.CursorShape.SizeAllCursor)
+        icon_label.mousePressEvent = self._title_press
+        icon_label.mouseMoveEvent = self._title_move
+        icon_label.mouseReleaseEvent = self._title_release
+        top_bar.addWidget(icon_label)
+
         # 搜索框
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText("搜索剪贴板、笔记、密码...")
+        self._search_input.setPlaceholderText("搜索剪贴板、笔记、定时任务...")
         self._search_input.textChanged.connect(self._on_text_changed)
-        layout.addWidget(self._search_input)
+        top_bar.addWidget(self._search_input, 1)
+
+        # 关闭按钮
+        close_btn = QLabel("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setToolTip("关闭")
+        close_btn.setStyleSheet("""
+            QLabel {
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+                color: #999;
+                background: transparent;
+            }
+            QLabel:hover {
+                color: #d32f2f;
+                background: rgba(211, 47, 47, 0.1);
+                border-radius: 4px;
+            }
+        """)
+        close_btn.mousePressEvent = lambda e: self.hide()
+        top_bar.addWidget(close_btn)
+
+        layout.addLayout(top_bar)
 
         # 结果树
         self._tree = QTreeWidget()
@@ -102,9 +153,11 @@ class SearchWindow(QDialog):
                     text = entry.get("title", "未命名")
                     child = QTreeWidgetItem([text])
                     child.setData(0, Qt.ItemDataRole.UserRole, entry)
-                elif group["module"] == "safe":
-                    text = f"{entry.get('name', '')} — {entry.get('username', '')}"
+                elif group["module"] == "task":
+                    text = entry.get("name", "未命名")
+                    desc = entry.get("description", "")
                     child = QTreeWidgetItem([text])
+                    child.setToolTip(0, desc if desc else text)
                     child.setData(0, Qt.ItemDataRole.UserRole, entry)
                 root.addChild(child)
 
@@ -129,8 +182,8 @@ class SearchWindow(QDialog):
             self.jump_to.emit("clip", entry)
         elif "笔记" in module_label:
             self.jump_to.emit("note", entry)
-        elif "密码" in module_label:
-            self.jump_to.emit("safe", entry)
+        elif "定时任务" in module_label:
+            self.jump_to.emit("task", entry)
 
     # ---- 公共方法 ----
     def show_and_focus(self, x=None, y=None):
@@ -142,6 +195,20 @@ class SearchWindow(QDialog):
         self.activateWindow()
         self._search_input.setFocus()
         self._search_input.selectAll()
+
+    # ---- 拖拽移动 ----
+    def _title_press(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint()
+
+    def _title_move(self, event: QMouseEvent):
+        if self._drag_pos is not None:
+            delta = event.globalPosition().toPoint() - self._drag_pos
+            self.move(self.pos() + delta)
+            self._drag_pos = event.globalPosition().toPoint()
+
+    def _title_release(self, event: QMouseEvent):
+        self._drag_pos = None
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:

@@ -1,34 +1,47 @@
-# InfoVault 架构文档
+# trove 架构文档
 
 ## 一、项目概述
 
-InfoVault 是一款面向 Windows 平台的离线效率工具，集成三大核心模块：剪贴板历史管理（ClipCache）、微笔记（NoteNest）、本地定时小助手（TaskFlow）。技术栈为 Python + PySide6。
+trove 是一款面向 Windows 平台的离线效率工具，集成三大核心模块：剪贴板历史管理（ClipCache）、微笔记（NoteNest）、本地定时小助手（TaskFlow）。技术栈为 Python + PySide6。
 
 ---
 
 ## 二、项目结构
 
 ```
-InfoVault/
-├── main.py                  # 入口，初始化 QApplication
+trove/
+├── main.py                  # 入口，初始化 QApplication，组装所有模块
+├── config.py                # 全局配置（含笔记预设颜色）
 ├── core/
-│   ├── clipboard_monitor.py # 剪贴板监控逻辑
-│   ├── note_manager.py      # 笔记增删改查
-│   ├── task_scheduler.py    # 定时任务调度引擎
-│   ├── search_engine.py     # 统一搜索
-│   └── backup.py            # 自动备份
+│   ├── clipboard_monitor.py # ClipStore + ClipboardMonitor（剪贴板 CRUD + Win32 钩子）
+│   ├── note_manager.py      # NoteStore（笔记/任务笔记/标签 CRUD + FTS5 + 回收站）
+│   ├── task_manager.py      # TaskStore（定时任务 + 日志 CRUD）
+│   ├── task_scheduler.py    # TaskScheduler + RuleParser（调度引擎）
+│   ├── search_engine.py     # SearchEngine（三模块聚合搜索，子线程）
+│   ├── backup.py            # BackupManager（自动/手动备份）
+│   └── tray_manager.py      # TrayManager（系统托盘 + 全局热键）
 ├── ui/
-│   ├── main_window.py       # 主窗口布局（侧边栏+StackedWidget）
-│   ├── clip_page.py         # 剪贴板页面
-│   ├── note_page.py         # 笔记页面（卡片墙）
-│   ├── task_page.py         # 定时助手页面（任务列表+创建/编辑）
-│   ├── settings_page.py     # 设置页
-│   ├── widgets/             # 自定义组件（卡片、历史条目等）
-│   └── resources/           # 图标、qss 样式
+│   ├── main_window.py       # 主窗口（侧边栏 + QStackedWidget + 页面切换信号）
+│   ├── clip_page.py         # 剪贴板历史页面
+│   ├── note_page.py         # 笔记页面（普通/任务/回收站三标签页）
+│   ├── task_page.py         # 定时任务页面
+│   ├── settings_page.py     # 设置页（主题中文名、防滚轮、实时切换）
+│   ├── search_window.py     # 浮动搜索窗口（可拖拽、三模块搜索）
+│   ├── paste_popup.py       # 粘贴选择弹窗（可拖拽）
+│   └── widgets/
+│       ├── note_card.py         # 普通笔记卡片
+│       ├── note_editor.py       # 笔记编辑器（图文/任务/配色/定时）
+│       ├── note_float.py        # 普通笔记悬浮窗（锁/解锁、图片自适应）
+│       ├── task_note_card.py    # 任务笔记卡片（勾选框清单）
+│       ├── task_note_float.py   # 任务笔记交互式悬浮窗
+│       ├── task_editor.py       # 任务编辑器（弹窗图文提醒）
+│       ├── task_reminder_popup.py # 定时提醒弹窗（可拖拽缩放、图文适配）
+│       ├── card_flow.py         # 自适应网格布局
+│       ├── flow_layout.py       # 流式布局
+│       └── clip_item_delegate.py # 剪贴板自定义绘制
 ├── data/
-│   ├── db.py                # SQLite 管理
-│   └── crypto.py            # 加密工具
-└── config.py                # 配置常量
+│   └── db.py                    # SQLite 管理（WAL、迁移、写入队列）
+└── assets/                      # 图标资源（锁/解锁等）
 ```
 
 ---
@@ -97,7 +110,7 @@ InfoVault/
 | `clipboard.db` | SQLite | 剪贴板历史记录 |
 | `notes.db` | SQLite | 笔记与标签数据 |
 | `tasks.db` | SQLite | 定时任务与执行日志 |
-| `QSettings` (INI) | %APPDATA%/InfoVault/ | 用户偏好配置 |
+| `QSettings` (INI) | %APPDATA%/trove/ | 用户偏好配置 |
 
 ---
 
@@ -193,14 +206,19 @@ ORDER BY timestamp ASC LIMIT <超出数>;
 ```sql
 -- 笔记主表
 CREATE TABLE notes (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT,
-    content    TEXT DEFAULT '',
-    color      TEXT DEFAULT '#FFFFFF',
-    sort_order INTEGER DEFAULT 0,
-    created    INTEGER,
-    modified   INTEGER,
-    is_floating INTEGER DEFAULT 0
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT,
+    content       TEXT DEFAULT '',
+    color         TEXT DEFAULT '#FFFFFF',
+    font_color    TEXT DEFAULT '#000000',
+    sort_order    INTEGER DEFAULT 0,
+    created       INTEGER,
+    modified      INTEGER,
+    is_floating   INTEGER DEFAULT 0,
+    is_deleted    INTEGER DEFAULT 0,
+    note_type     TEXT DEFAULT 'normal',
+    task_schedule TEXT DEFAULT '',
+    auto_startup  INTEGER DEFAULT 0
 );
 
 -- 全文搜索
@@ -221,10 +239,12 @@ CREATE TABLE note_tags (
 
 ### 6.3 关键实现
 
-- **CardFlowWidget**：手动 positioning 的自适应网格容器，支持拖拽排序。
-- **NoteCard**：`QFrame` 子类，含标题、内容摘要、颜色、标签、浮动开关。
-- **NoteFloatWindow**：无边框置顶悬浮窗，可拖拽移动、快速切换颜色。
-- **拖拽排序**：自定义排序模式下，鼠标拖拽 → 松手计算目标网格位置 → 更新 `sort_order`。
+- **NotePage 三标签页**：普通笔记 / 任务笔记 / 回收站，各自独立的卡片视图。
+- **普通笔记**：NoteCard + NoteFloatWindow，支持图文混排、8 色预设+自定义配色、悬浮锁/解锁。
+- **任务笔记**：TaskNoteCard（勾选框清单）+ TaskNoteFloat（交互式悬浮窗），支持定时弹出和开机自启。
+- **回收站**：软删除机制，NoteCard 选择模式查看，可恢复或永久删除。
+- **NoteEditor**：统一编辑器，支持普通/任务笔记切换、图片插入、配色自定义、定时规则设置。
+- **CardFlowWidget**：手动 positioning 自适应网格容器，支持拖拽排序。
 - **标签系统**：每个笔记最多 1 个标签（最多 5 字），下拉框筛选。
 
 ---
@@ -318,7 +338,7 @@ CREATE INDEX idx_task_logs_triggered ON task_logs(triggered_at);
 
 | 动作 | `action_type` | `action_value` | 说明 |
 |------|---------------|----------------|------|
-| 弹窗提醒 | `popup` | 空或图片路径 | 自定义美观弹窗，显示任务名和说明 |
+| 弹窗提醒 | `popup` | HTML（文字+图片） | 图文混排提醒弹窗，可拖拽缩放，图片自适应 |
 | 声音提示 | `sound` | 音频文件路径（空=系统音） | 播放指定音频或内置提示音 |
 | 打开文件 | `open_file` | 文件路径 | 用系统默认程序打开 |
 | 打开文件夹 | `open_folder` | 文件夹路径 | 用资源管理器打开 |
@@ -399,7 +419,7 @@ CREATE INDEX idx_task_logs_triggered ON task_logs(triggered_at);
 ┌─────────────────────────┐
 │   定时备份（每30分钟）      │
 │   clipboard.db           │
-│   notes.db      ──→  %APPDATA%/InfoVault/backups/
+│   notes.db      ──→  %APPDATA%/trove/backups/
 │   tasks.db               │  保留最近 5 个版本
 └─────────────────────────┘
 ┌─────────────────────────┐
@@ -464,7 +484,7 @@ CREATE INDEX idx_task_logs_triggered ON task_logs(triggered_at);
 ```
 
 - 数据库写入统一由后台线程队列串行处理，避免多线程 SQLite 并发问题。
-- 异常时记录日志（`%APPDATA%/InfoVault/logs/`），UI 层通过 `QMessageBox` 提示。
+- 异常时记录日志（`%APPDATA%/trove/logs/`），UI 层通过 `QMessageBox` 提示。
 
 ---
 
@@ -499,5 +519,5 @@ Phase 3: 全局集成
   ```
 - **目标平台**：Windows 10/11，64 位，Python 3.10+ 64bit。
 - **安装程序**（可选）：Inno Setup 生成开始菜单快捷方式和卸载入口。
-- **配置文件**：`%APPDATA%/InfoVault/settings.ini`。
-- **日志文件**：`%APPDATA%/InfoVault/logs/`。
+- **配置文件**：`%APPDATA%/trove/settings.ini`。
+- **日志文件**：`%APPDATA%/trove/logs/`。

@@ -5,7 +5,7 @@ import os
 import logging
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QTranslator, QLibraryInfo
 from config import AppConfig, ensure_directories
 
 
@@ -48,6 +48,18 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("trove")
     app.setOrganizationName("trove")
+
+    # 加载 Qt 中文翻译（修复 QColorDialog 等系统对话框的英文问题）
+    translator = QTranslator()
+    translations_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if translator.load("qt_zh_CN", translations_dir):
+        app.installTranslator(translator)
+    else:
+        # 备选：从 PySide6 包目录查找
+        import PySide6
+        alt_dir = os.path.join(os.path.dirname(PySide6.__file__), "translations")
+        if translator.load("qt_zh_CN", alt_dir):
+            app.installTranslator(translator)
 
     # 应用图标
     icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
@@ -121,13 +133,12 @@ def main() -> int:
     # ---- M09: 设置页面（后注册，需拿到其它模块引用） ----
     settings_page = create_settings_page(config)
     settings_page.close_to_tray_changed.connect(window.set_close_to_tray)
-    settings_page.note_font_size_changed.connect(note_page.set_font_size)
     window.register_page("settings", settings_page)
 
     # ---- M06: 全局搜索 ----
     from core.search_engine import SearchEngine
     from ui.search_window import SearchWindow
-    search_engine = SearchEngine(clip_store, note_store)
+    search_engine = SearchEngine(clip_store, note_store, task_store)
     search_window = SearchWindow(search_engine)
 
     def on_search_result_jump(module_name, entry_data):
@@ -136,6 +147,8 @@ def main() -> int:
             window.switch_to_page("clip")
         elif module_name == "note":
             window.switch_to_page("note")
+        elif module_name == "task":
+            window.switch_to_page("task")
         search_window.hide()
         window.show()
         window.raise_()
@@ -184,6 +197,17 @@ def main() -> int:
     tray_mgr.setup_hotkeys(config, on_search=show_search, on_new_note=new_note_hotkey, on_paste=show_paste_popup)
     tray_mgr.setup_tray(app, window, on_new_note=new_note_hotkey, on_quit=app.quit)
 
+    # ---- 热键与设置的冲突处理 ----
+    def on_page_changed(page_key: str):
+        """切换到设置页时暂停全局热键，离开时恢复。"""
+        if page_key == "settings":
+            tray_mgr.unregister_all()
+        else:
+            tray_mgr.setup_hotkeys(config, on_search=show_search,
+                                   on_new_note=new_note_hotkey, on_paste=show_paste_popup)
+
+    window.page_changed.connect(on_page_changed)
+
     # ---- M08: 备份系统 ----
     from core.backup import BackupManager
     backup_mgr = BackupManager(config)
@@ -201,12 +225,18 @@ def main() -> int:
     clip_cleanup_timer.timeout.connect(_auto_delete_old_clips)
     clip_cleanup_timer.start(3600000)  # 每小时检查一次
 
+    # ---- 任务笔记调度 ----
+    note_page.start_task_scheduler()
+    # 延迟自动打开开机任务笔记（等待悬浮窗恢复完成）
+    QTimer.singleShot(500, note_page.auto_open_task_notes)
+
     # 显示主窗口
     window.show()
     log.info("主窗口已显示")
     exit_code = app.exec()
 
     # ---- 清理 ----
+    note_page.stop_task_scheduler()
     note_page.close_all_floats()
     task_scheduler.stop()
     backup_mgr.stop_auto_backup()

@@ -13,8 +13,10 @@ from PySide6.QtCore import Qt, Signal
 from core.note_manager import NoteStore
 from ui.widgets.card_flow import CardFlowWidget
 from ui.widgets.note_card import NoteCard
+from ui.widgets.task_note_card import TaskNoteCard
 from ui.widgets.note_editor import NoteEditor
 from ui.widgets.note_float import NoteFloatWindow
+from ui.widgets.task_note_float import TaskNoteFloat
 from config import AppConfig
 
 log = logging.getLogger("trove.note")
@@ -31,18 +33,19 @@ def _get_font_colors():
 
 
 class NotePage(QWidget):
-    """微笔记管理主页面。"""
+    """微笔记管理主页面（含普通笔记/任务笔记/回收站子标签）。"""
 
     def __init__(self, note_store: NoteStore, font_size: int = 14):
         super().__init__()
         self._store = note_store
         self._font_size = font_size
-        self._cards: list[NoteCard] = []
+        self._cards: list = []
         self._float_windows: dict[int, NoteFloatWindow] = {}
-        self._selected_tag_id: int | None = None  # 单选标签
+        self._selected_tag_id: int | None = None
         self._selected_color: str | None = None
         self._sort_by = "modified"
         self._batch_mode = False
+        self._current_tab = "normal"  # normal / task / trash
         self._init_ui()
         self._refresh()
         self._restore_floating()
@@ -50,17 +53,39 @@ class NotePage(QWidget):
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(6)
+
+        # ---- 子标签栏 ----
+        tab_bar = QHBoxLayout()
+        tab_bar.setSpacing(4)
+        self._tab_btns: dict[str, QPushButton] = {}
+        for key, label in [("normal", "普通笔记"), ("task", "任务笔记"), ("trash", "回收站")]:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedHeight(28)
+            btn.setMinimumWidth(70)
+            btn.setStyleSheet("""
+                QPushButton { padding: 2px 10px; border-radius: 4px; }
+                QPushButton:checked { background: #1a73e8; color: #fff; font-weight: bold; }
+                QPushButton:!checked { background: transparent; color: #555; }
+                QPushButton:hover:!checked { background: #e8e8e8; }
+            """)
+            btn.clicked.connect(lambda checked, k=key: self._switch_tab(k))
+            tab_bar.addWidget(btn)
+            self._tab_btns[key] = btn
+        self._tab_btns["normal"].setChecked(True)
+        tab_bar.addStretch()
+        main_layout.addLayout(tab_bar)
 
         # ---- 顶部工具栏 ----
         toolbar = QHBoxLayout()
         toolbar.setSpacing(6)
 
-        new_btn = QPushButton("+ 新建笔记")
-        new_btn.setFixedHeight(30)
-        new_btn.setMinimumWidth(105)
-        new_btn.clicked.connect(self._on_new)
-        toolbar.addWidget(new_btn)
+        self._new_btn = QPushButton("+ 新建笔记")
+        self._new_btn.setFixedHeight(30)
+        self._new_btn.setMinimumWidth(105)
+        self._new_btn.clicked.connect(self._on_new)
+        toolbar.addWidget(self._new_btn)
 
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("搜索笔记...")
@@ -75,7 +100,23 @@ class NotePage(QWidget):
         self._sort_btn = sort_btn
         toolbar.addWidget(sort_btn)
 
-        # 批量操作按钮（默认隐藏）
+        # 回收站专用按钮
+        self._trash_restore_btn = QPushButton("恢复选中")
+        self._trash_restore_btn.setFixedHeight(30)
+        self._trash_restore_btn.setMinimumWidth(80)
+        self._trash_restore_btn.hide()
+        self._trash_restore_btn.clicked.connect(self._on_trash_restore)
+        toolbar.addWidget(self._trash_restore_btn)
+
+        self._trash_empty_btn = QPushButton("清空回收站")
+        self._trash_empty_btn.setFixedHeight(30)
+        self._trash_empty_btn.setMinimumWidth(90)
+        self._trash_empty_btn.setStyleSheet("color: #d32f2f;")
+        self._trash_empty_btn.hide()
+        self._trash_empty_btn.clicked.connect(self._on_empty_trash)
+        toolbar.addWidget(self._trash_empty_btn)
+
+        # 批量操作按钮（普通/任务笔记模式显示）
         self._batch_bar = QHBoxLayout()
         self._batch_bar.setSpacing(6)
         self._batch_select_btn = QPushButton("批量选择")
@@ -86,21 +127,21 @@ class NotePage(QWidget):
 
         self._batch_color_btn = QPushButton("设置颜色")
         self._batch_color_btn.setFixedHeight(30)
-        self._batch_color_btn.setMinimumWidth(70)
+        self._batch_color_btn.setMinimumWidth(80)
         self._batch_color_btn.hide()
         self._batch_color_btn.clicked.connect(self._on_batch_color)
         self._batch_bar.addWidget(self._batch_color_btn)
 
         self._batch_tag_btn = QPushButton("设置标签")
         self._batch_tag_btn.setFixedHeight(30)
-        self._batch_tag_btn.setMinimumWidth(70)
+        self._batch_tag_btn.setMinimumWidth(80)
         self._batch_tag_btn.hide()
         self._batch_tag_btn.clicked.connect(self._on_batch_tag)
         self._batch_bar.addWidget(self._batch_tag_btn)
 
         self._batch_delete_btn = QPushButton("删除选中")
         self._batch_delete_btn.setFixedHeight(30)
-        self._batch_delete_btn.setMinimumWidth(70)
+        self._batch_delete_btn.setMinimumWidth(80)
         self._batch_delete_btn.setStyleSheet("color: #d32f2f;")
         self._batch_delete_btn.hide()
         self._batch_delete_btn.clicked.connect(self._on_batch_delete)
@@ -114,7 +155,6 @@ class NotePage(QWidget):
         self._batch_bar.addWidget(self._batch_cancel_btn)
 
         toolbar.addLayout(self._batch_bar)
-
         main_layout.addLayout(toolbar)
 
         # ---- 标签栏 ----
@@ -122,7 +162,7 @@ class NotePage(QWidget):
         self._tag_bar.setAlignment(Qt.AlignmentFlag.AlignLeft)
         main_layout.addLayout(self._tag_bar)
 
-        # ---- 卡片墙（ScrollArea + CardFlowWidget） ----
+        # ---- 卡片容器 ----
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -130,6 +170,46 @@ class NotePage(QWidget):
         self._card_flow.order_changed.connect(self._on_order_changed)
         self._scroll_area.setWidget(self._card_flow)
         main_layout.addWidget(self._scroll_area, 1)
+
+    def _switch_tab(self, key: str):
+        self._current_tab = key
+        for k, btn in self._tab_btns.items():
+            btn.setChecked(k == key)
+        # 控制按钮显隐
+        is_trash = key == "trash"
+        is_normal = key in ("normal", "task")
+        self._new_btn.setVisible(is_normal)
+        self._search_input.setVisible(is_normal)
+        self._sort_btn.setVisible(is_normal)
+        # 退出批量模式，恢复批量栏默认状态
+        self._batch_mode = False
+        self._batch_select_btn.setVisible(is_normal)
+        self._batch_color_btn.setVisible(False)
+        self._batch_tag_btn.setVisible(False)
+        self._batch_delete_btn.setVisible(False)
+        self._batch_cancel_btn.setVisible(False)
+        self._trash_restore_btn.setVisible(is_trash)
+        self._trash_empty_btn.setVisible(is_trash)
+        self._refresh()
+
+    # ---- 回收站操作 ----
+    def _on_trash_restore(self):
+        selected = self._get_selected_ids()
+        if not selected:
+            QMessageBox.information(self, "提示", "未选中任何笔记。")
+            return
+        for nid in selected:
+            self._store.restore(nid)
+        self._refresh()
+
+    def _on_empty_trash(self):
+        reply = QMessageBox.question(
+            self, "确认清空", "回收站中所有笔记将被永久删除，不可恢复。确定清空吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._store.empty_trash()
+            self._refresh()
 
     # ---- 数据刷新 ----
     def _refresh(self):
@@ -142,23 +222,36 @@ class NotePage(QWidget):
         self._card_flow.clear()
         self._cards.clear()
 
-        tag_list = [self._selected_tag_id] if self._selected_tag_id else None
-        notes = self._store.get_all(
-            tag_ids=tag_list,
-            sort_by=self._sort_by,
-            color=self._selected_color,
-        )
-        log.info(f"刷新笔记: 查询到 {len(notes)} 条")
-        for note in notes:
-            log.debug(f"  笔记 id={note.get('id')}, title={note.get('title')!r}, content长度={len(note.get('content', ''))}")
-            card = NoteCard(note)
-            card.double_clicked.connect(self._on_edit)
-            card.float_toggled.connect(self._on_float_toggle)
-            card.delete_requested.connect(self._on_delete_single)
-            if self._batch_mode:
-                card.set_select_mode(True)
-            self._cards.append(card)
-            self._card_flow.add_card(card)
+        if self._current_tab == "trash":
+            notes = self._store.get_trashed()
+            for note in notes:
+                card = NoteCard(note)
+                card.set_select_mode(True)  # 回收站始终选择模式
+                self._cards.append(card)
+                self._card_flow.add_card(card)
+        else:
+            tag_list = [self._selected_tag_id] if self._selected_tag_id else None
+            notes = self._store.get_all(
+                tag_ids=tag_list, sort_by=self._sort_by,
+                color=self._selected_color,
+                note_type="task" if self._current_tab == "task" else "normal",
+            )
+            for note in notes:
+                if self._current_tab == "task":
+                    card = TaskNoteCard(note)
+                    card.double_clicked.connect(self._on_edit)
+                    card.float_toggled.connect(self._on_float_toggle)
+                    card.delete_requested.connect(self._on_delete_single)
+                    card.item_checked.connect(self._on_task_item_checked)
+                else:
+                    card = NoteCard(note)
+                    card.double_clicked.connect(self._on_edit)
+                    card.float_toggled.connect(self._on_float_toggle)
+                    card.delete_requested.connect(self._on_delete_single)
+                if self._batch_mode:
+                    card.set_select_mode(True)
+                self._cards.append(card)
+                self._card_flow.add_card(card)
 
         self._card_flow.layout_cards()
         self._refresh_tag_bar()
@@ -212,8 +305,9 @@ class NotePage(QWidget):
         sep2.setStyleSheet("color: #ccc; padding: 0 4px;")
         self._tag_bar.addWidget(sep2)
 
-        # 颜色筛选按钮
+        # 颜色筛选按钮（预设颜色）
         filter_colors = _get_filter_colors()
+        preset_colors_set = set(filter_colors.values())
         for name, color in filter_colors.items():
             btn = QPushButton()
             btn.setFixedSize(20, 20)
@@ -234,6 +328,29 @@ class NotePage(QWidget):
             """)
             btn.clicked.connect(lambda checked, c=color: self._on_color_click(c))
             self._tag_bar.addWidget(btn)
+
+        # 自定义颜色 — 色盘按钮
+        all_colors = self._store.get_all_unique_colors()
+        custom_colors = [c for c in all_colors if c not in preset_colors_set]
+        if custom_colors:
+            palette_btn = QPushButton("⌄")
+            palette_btn.setFixedSize(20, 20)
+            palette_btn.setToolTip(f"自定义颜色筛选（{len(custom_colors)} 种）")
+            palette_btn.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid #aaa;
+                    border-radius: 3px;
+                    font-size: 10px;
+                    background: #fafafa;
+                    padding: 0;
+                }
+                QPushButton:hover {
+                    border-color: #555;
+                    background: #e8e8e8;
+                }
+            """)
+            palette_btn.clicked.connect(lambda: self._show_color_palette(custom_colors))
+            self._tag_bar.addWidget(palette_btn)
 
         self._tag_bar.addStretch()
 
@@ -257,6 +374,76 @@ class NotePage(QWidget):
             self._selected_color = None
         else:
             self._selected_color = color
+        self._refresh()
+
+    def _show_color_palette(self, colors: list[str]):
+        """弹出用户自定义颜色的色盘窗口（5 列 × 3 行 + 滚动条）。"""
+        from PySide6.QtWidgets import QScrollArea
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("自定义颜色")
+        dlg.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        dlg.setFixedSize(220, 140)
+        dlg.setStyleSheet("""
+            QDialog {
+                background: #fff;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+            }
+        """)
+
+        # 滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+
+        grid_widget = QWidget()
+        grid = QVBoxLayout(grid_widget)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setSpacing(4)
+
+        row_layout = None
+        for i, color in enumerate(colors):
+            if i % 5 == 0:
+                row_layout = QHBoxLayout()
+                row_layout.setSpacing(4)
+                grid.addLayout(row_layout)
+
+            btn = QPushButton()
+            btn.setFixedSize(36, 28)
+            btn.setToolTip(color)
+            border = "3px solid #1a73e8" if color == self._selected_color else "1px solid #bbb"
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {color};
+                    border: {border};
+                    border-radius: 3px;
+                }}
+                QPushButton:hover {{
+                    border-color: #555;
+                    border-width: 2px;
+                }}
+            """)
+            btn.clicked.connect(lambda checked, c=color: self._on_custom_color_selected(c, dlg))
+            row_layout.addWidget(btn)
+
+        grid.addStretch()
+        scroll.setWidget(grid_widget)
+
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.setContentsMargins(0, 0, 0, 0)
+        dlg_layout.addWidget(scroll)
+
+        # 定位在颜色按钮下方
+        pos = self.mapToGlobal(self._tag_bar.geometry().bottomLeft())
+        dlg.move(pos.x() + 20, pos.y() + 4)
+        dlg.exec()
+
+    def _on_custom_color_selected(self, color: str, dlg: QDialog):
+        """自定义色盘中选择颜色。"""
+        self._selected_color = color
+        dlg.accept()
         self._refresh()
 
     def _toggle_sort(self):
@@ -299,9 +486,16 @@ class NotePage(QWidget):
     def _on_new(self):
         if self._batch_mode:
             return
-        dlg = NoteEditor(self._store, parent=self)
-        dlg.saved.connect(self._on_note_saved)
-        dlg.exec()
+        try:
+            dlg = NoteEditor(self._store, parent=self)
+            # 从任务笔记标签页新建时默认勾选任务笔记
+            if self._current_tab == "task":
+                dlg._task_note_cb.setChecked(True)
+            dlg.saved.connect(self._on_note_saved)
+            dlg.exec()
+        except Exception as e:
+            log.error(f"打开新建笔记失败: {e}", exc_info=True)
+            QMessageBox.warning(self, "错误", f"新建笔记失败: {e}")
 
     def _on_edit(self, note_id: int):
         if self._batch_mode:
@@ -309,9 +503,13 @@ class NotePage(QWidget):
         note = self._store.get(note_id)
         if not note:
             return
-        dlg = NoteEditor(self._store, note, self)
-        dlg.saved.connect(self._on_note_saved)
-        dlg.exec()
+        try:
+            dlg = NoteEditor(self._store, note, self)
+            dlg.saved.connect(self._on_note_saved)
+            dlg.exec()
+        except Exception as e:
+            log.error(f"打开编辑笔记失败: {e}", exc_info=True)
+            QMessageBox.warning(self, "错误", f"编辑笔记失败: {e}")
 
     def _on_note_saved(self, note_id: int):
         """编辑保存后，刷新卡片和对应悬浮窗口。"""
@@ -346,9 +544,15 @@ class NotePage(QWidget):
         note = self._store.get(note_id)
         if not note:
             return
-        win = NoteFloatWindow(note, self._font_size)
-        win.unfloated.connect(self._on_float_window_closed)
-        win.edit_requested.connect(self._on_edit)
+        # 任务笔记使用专用交互式悬浮窗
+        if note.get("note_type") == "task":
+            win = TaskNoteFloat(note)
+            win.unfloated.connect(self._on_float_window_closed)
+            win.items_changed.connect(self._on_task_float_items_changed)
+        else:
+            win = NoteFloatWindow(note, self._font_size)
+            win.unfloated.connect(self._on_float_window_closed)
+            win.edit_requested.connect(self._on_edit)
         self._float_windows[note_id] = win
 
     def _hide_float_window(self, note_id: int):
@@ -367,11 +571,50 @@ class NotePage(QWidget):
                 card.set_floating_state(False)
                 break
 
+    def _on_task_float_items_changed(self, note_id: int, items: list):
+        """任务笔记悬浮窗勾选变更 → 保存 DB + 同步页面卡片。"""
+        import json
+        content = json.dumps(items, ensure_ascii=False)
+        self._store.update(note_id, content=content)
+        self._sync_task_card(note_id)
+
+    def _on_task_item_checked(self, note_id: int, idx: int, checked: bool):
+        """页面卡片勾选变更 → 保存 DB + 同步悬浮窗。"""
+        # 找到对应卡片，获取最新 items 列表
+        for card in self._cards:
+            if card._note_id == note_id:
+                items = card.get_items()
+                import json
+                content = json.dumps(items, ensure_ascii=False)
+                self._store.update(note_id, content=content)
+                # 同步悬浮窗
+                if note_id in self._float_windows:
+                    win = self._float_windows[note_id]
+                    if hasattr(win, 'update_data'):
+                        note = self._store.get(note_id)
+                        if note:
+                            win.update_data(note)
+                break
+
+    def _sync_task_card(self, note_id: int):
+        """同步指定任务笔记的页面卡片数据。"""
+        note = self._store.get(note_id)
+        if not note:
+            return
+        for card in self._cards:
+            if card._note_id == note_id:
+                card.update_data(note)
+                break
+
     def _update_float_window(self, note_id: int):
         if note_id in self._float_windows:
             note = self._store.get(note_id)
             if note:
-                self._float_windows[note_id].update_content(note, self._font_size)
+                win = self._float_windows[note_id]
+                if isinstance(win, TaskNoteFloat):
+                    win.update_data(note)
+                else:
+                    win.update_content(note, self._font_size)
 
     def _restore_floating(self):
         """启动时恢复所有悬浮笔记。"""
@@ -380,10 +623,11 @@ class NotePage(QWidget):
             self._show_float_window(note["id"])
 
     def set_font_size(self, size: int):
-        """更新所有悬浮窗口的字体大小。"""
+        """更新所有普通笔记悬浮窗口的字体大小。"""
         self._font_size = size
         for win in self._float_windows.values():
-            win._set_font()
+            if isinstance(win, NoteFloatWindow):
+                win._set_font()
 
     def close_all_floats(self):
         """关闭所有悬浮窗口（退出时调用）。"""
@@ -570,6 +814,79 @@ class NotePage(QWidget):
             self._refresh()
         except Exception as e:
             log.error(f"从剪贴板创建笔记失败: {e}", exc_info=True)
+
+    # ---- 任务笔记定时与开机启动 ----
+    def start_task_scheduler(self):
+        """启动任务笔记定时检查（每秒一次）。"""
+        from PySide6.QtCore import QTimer
+        self._task_timer = QTimer()
+        self._task_timer.timeout.connect(self._check_task_schedules)
+        self._task_timer.start(1000)
+
+    def stop_task_scheduler(self):
+        """停止任务笔记定时检查。"""
+        if hasattr(self, '_task_timer') and self._task_timer:
+            self._task_timer.stop()
+
+    def auto_open_task_notes(self):
+        """开机时自动打开设置了 auto_startup 的任务笔记（悬浮窗）。"""
+        notes = self._store.get_all(
+            note_type="task",
+            sort_by="modified",
+        )
+        for note in notes:
+            if note.get("auto_startup"):
+                self._show_float_window(note["id"])
+
+    def _check_task_schedules(self):
+        """每秒检查需定时显示的任务笔记。"""
+        import datetime, json
+        now = datetime.datetime.now()
+        minute_key = now.strftime("%Y%m%d%H%M")
+        if not hasattr(self, '_task_last_check'):
+            self._task_last_check = ""
+        if self._task_last_check == minute_key:
+            return
+        self._task_last_check = minute_key
+
+        notes = self._store.get_all(note_type="task", sort_by="modified")
+        for note in notes:
+            sched = note.get("task_schedule", "")
+            if not sched:
+                continue
+            try:
+                s = json.loads(sched)
+            except Exception:
+                continue
+            s_type = s.get("type", "")
+            s_value = s.get("value", "")
+            if not s_type or not s_value:
+                continue
+
+            match = False
+            if s_type == "once":
+                try:
+                    target = datetime.datetime.strptime(s_value, "%Y-%m-%d %H:%M")
+                    match = abs((now - target).total_seconds()) < 60
+                except Exception:
+                    pass
+            elif s_type == "daily":
+                try:
+                    h, m = map(int, s_value.split(":"))
+                    match = now.hour == h and now.minute == m
+                except Exception:
+                    pass
+            elif s_type == "weekly":
+                try:
+                    days_str, time_str = s_value.split("@")
+                    days = {int(d.strip()) for d in days_str.split(",")}
+                    h, m = map(int, time_str.split(":"))
+                    match = now.isoweekday() in days and now.hour == h and now.minute == m
+                except Exception:
+                    pass
+
+            if match:
+                self._show_float_window(note["id"])
 
 
 def create_page(note_store: NoteStore, font_size: int = 14) -> QWidget:

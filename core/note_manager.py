@@ -35,7 +35,8 @@ class NoteStore:
 
     def update(self, note_id: int, **fields):
         """更新笔记字段。"""
-        allowed = {"title", "content", "color", "font_color", "sort_order"}
+        allowed = {"title", "content", "color", "font_color", "sort_order",
+                   "is_deleted", "note_type", "task_schedule", "auto_startup"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return
@@ -57,8 +58,12 @@ class NoteStore:
             )
 
     def delete(self, note_id: int):
+        """软删除：标记为已删除（移入回收站）。"""
+        self._db.execute("UPDATE notes SET is_deleted = 1 WHERE id = ?", (note_id,))
+
+    def hard_delete(self, note_id: int):
+        """永久删除笔记。"""
         self._db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-        # 外部内容表删除语法
         self._db.execute(
             "INSERT INTO notes_fts(notes_fts, rowid) VALUES('delete', ?)",
             (note_id,),
@@ -66,7 +71,14 @@ class NoteStore:
         self._db.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
 
     def delete_many(self, note_ids: list[int]):
-        """批量删除笔记。"""
+        """批量软删除笔记。"""
+        if not note_ids:
+            return
+        placeholders = ",".join("?" * len(note_ids))
+        self._db.execute(f"UPDATE notes SET is_deleted = 1 WHERE id IN ({placeholders})", note_ids)
+
+    def hard_delete_many(self, note_ids: list[int]):
+        """批量永久删除。"""
         if not note_ids:
             return
         placeholders = ",".join("?" * len(note_ids))
@@ -78,6 +90,35 @@ class NoteStore:
             )
         self._db.execute(f"DELETE FROM note_tags WHERE note_id IN ({placeholders})", note_ids)
 
+    def restore(self, note_id: int):
+        """从回收站恢复笔记。"""
+        self._db.execute("UPDATE notes SET is_deleted = 0 WHERE id = ?", (note_id,))
+
+    def empty_trash(self):
+        """清空回收站（永久删除所有已标记删除的笔记）。"""
+        rows = self._db.fetchall("SELECT id FROM notes WHERE is_deleted = 1")
+        for row in rows:
+            self.hard_delete(row["id"])
+
+    def get_trashed(self) -> list[dict]:
+        """获取回收站中的笔记。"""
+        rows = self._db.fetchall("SELECT * FROM notes WHERE is_deleted = 1 ORDER BY modified DESC")
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["tags"] = self.get_note_tags(d["id"])
+            result.append(d)
+        return result
+
+    def convert_type(self, note_id: int) -> str:
+        """切换笔记类型（normal ↔ task），返回新类型。"""
+        note = self.get(note_id)
+        if not note:
+            return "normal"
+        new_type = "task" if note.get("note_type", "normal") == "normal" else "normal"
+        self._db.execute("UPDATE notes SET note_type = ? WHERE id = ?", (new_type, note_id))
+        return new_type
+
     def get(self, note_id: int) -> dict | None:
         note = self._db.fetchone("SELECT * FROM notes WHERE id = ?", (note_id,))
         if not note:
@@ -87,9 +128,10 @@ class NoteStore:
         return note
 
     def get_all(self, tag_ids: list[int] = None,
-                sort_by: str = "sort_order", color: str = None) -> list[dict]:
-        """获取所有笔记，可选标签筛选和颜色筛选。"""
-        conditions = []
+                sort_by: str = "sort_order", color: str = None,
+                note_type: str = None, include_deleted: bool = False) -> list[dict]:
+        """获取所有笔记，可选标签/颜色/类型筛选。"""
+        conditions = ["n.is_deleted = 0"] if not include_deleted else []
         params = []
 
         if tag_ids:
@@ -101,12 +143,12 @@ class NoteStore:
             conditions.append("n.color = ?")
             params.append(color)
 
-        if conditions:
-            where_clause = " AND ".join(conditions)
-            sql = f"SELECT * FROM notes n WHERE {where_clause} ORDER BY n.{sort_by} DESC"
-        else:
-            sql = f"SELECT * FROM notes ORDER BY {sort_by} DESC"
+        if note_type:
+            conditions.append("n.note_type = ?")
+            params.append(note_type)
 
+        where_clause = " AND ".join(conditions)
+        sql = f"SELECT * FROM notes n WHERE {where_clause} ORDER BY n.{sort_by} DESC"
         rows = self._db.fetchall(sql, tuple(params))
         result = []
         for row in rows:
@@ -199,6 +241,11 @@ class NoteStore:
             "UPDATE notes SET is_floating = ? WHERE id = ?",
             (1 if floating else 0, note_id),
         )
+
+    def get_all_unique_colors(self) -> list[str]:
+        """返回所有笔记中使用过的不同颜色值。"""
+        rows = self._db.fetchall("SELECT DISTINCT color FROM notes ORDER BY color")
+        return [r["color"] for r in rows if r["color"]]
 
     def get_floating(self) -> list[dict]:
         rows = self._db.fetchall("SELECT * FROM notes WHERE is_floating = 1")

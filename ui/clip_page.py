@@ -219,12 +219,12 @@ class ClipPage(QWidget):
 
         self._star_btn = QPushButton("星标")
         self._star_btn.setCheckable(True)
-        self._star_btn.setFixedWidth(60)
+        self._star_btn.setFixedWidth(64)
         self._star_btn.toggled.connect(self._on_star_filter)
         toolbar.addWidget(self._star_btn)
 
         self._regex_delete_btn = QPushButton("正则删除")
-        self._regex_delete_btn.setFixedWidth(80)
+        self._regex_delete_btn.setFixedWidth(100)
         self._regex_delete_btn.clicked.connect(self._on_regex_delete)
         toolbar.addWidget(self._regex_delete_btn)
 

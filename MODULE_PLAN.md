@@ -1,4 +1,4 @@
-# InfoVault 模块化开发计划
+# trove 模块化开发计划
 
 > **目标读者：AI 开发工具**
 > 本文档以结构化方式定义所有模块的接口、依赖、优先级，便于 AI 按序逐步实现。
@@ -8,7 +8,7 @@
 ## 一、模块总览
 
 ```
-InfoVault
+trove
 │
 ├─ M00  项目骨架（入口 + 配置 + 目录初始化）
 ├─ M01  数据库层（SQLite 管理 + 迁移）
@@ -88,9 +88,9 @@ M00 项目骨架
 ```python
 class AppConfig:
     # 路径（运行时由 QSettings 或默认值填充）
-    DATA_DIR: str          # %APPDATA%/InfoVault/data
-    BACKUP_DIR: str        # %APPDATA%/InfoVault/backups
-    LOG_DIR: str           # %APPDATA%/InfoVault/logs
+    DATA_DIR: str          # %APPDATA%/trove/data
+    BACKUP_DIR: str        # %APPDATA%/trove/backups
+    LOG_DIR: str           # %APPDATA%/trove/logs
 
     # 剪贴板
     CLIP_MAX_HISTORY: int  # 默认 1000
@@ -301,24 +301,29 @@ def create_page(clip_store: ClipStore, monitor: ClipboardMonitor) -> QWidget: ..
 ```python
 class NoteStore:
     def __init__(self, db: Database): ...
-    def create(self, title: str, content: str = "") -> int: ...   # 返回 note_id
-    def update(self, note_id: int, **fields): ...
-    def delete(self, note_id: int): ...
+    def create(self, title: str, content: str = "") -> int: ...
+    def update(self, note_id: int, **fields): ...  # 支持 color/font_color/note_type/task_schedule/auto_startup
+    def delete(self, note_id: int): ...           # 软删除（移入回收站）
+    def hard_delete(self, note_id: int): ...       # 永久删除
     def delete_many(self, note_ids: list[int]): ...
+    def restore(self, note_id: int): ...           # 恢复
+    def empty_trash(self): ...                     # 清空回收站
+    def get_trashed(self) -> list[dict]: ...       # 获取回收站列表
     def get(self, note_id: int) -> dict | None: ...
-    def search(self, keyword: str, tag_ids: list[int] = None,
-               limit: int = 50, offset: int = 0) -> list[dict]: ...
-    def get_all(self, tag_ids: list[int] = None,
-                sort_by: str = "sort_order", color: str = None) -> list[dict]: ...
-    def reorder(self, note_ids: list[int]): ...   # 批量更新 sort_order
+    def search(self, keyword: str, tag_ids: list[int] = None, ...): ...
+    def get_all(self, tag_ids=None, sort_by="sort_order", color=None,
+                note_type=None, include_deleted=False) -> list[dict]: ...
+    def convert_type(self, note_id: int) -> str: ...  # 普通↔任务互转
+    def reorder(self, note_ids: list[int]): ...
 
-    # 标签操作
-    def add_tag(self, name: str) -> int: ...      # 返回 tag_id，最多 5 字
-    def get_all_tags(self) -> list[dict]: ...     # 仅返回有笔记使用的标签
+    # 标签
+    def add_tag(self, name: str) -> int: ...
+    def get_all_tags(self) -> list[dict]: ...
     def set_note_tags(self, note_id: int, tag_ids: list[int]): ...
     def get_note_tags(self, note_id: int) -> list[dict]: ...
+    def get_all_unique_colors(self) -> list[str]: ...  # 所有使用过的颜色
 
-    # 浮动窗口
+    # 浮动
     def set_floating(self, note_id: int, floating: bool): ...
     def get_floating(self) -> list[dict]: ...
 ```
@@ -334,15 +339,16 @@ class NoteStore:
 
 ---
 
-#### M04.2 CardFlowWidget 卡片墙
+#### M04.2 卡片墙组件
 
-**文件：** `ui/widgets/card_flow.py`, `ui/widgets/note_card.py`, `ui/widgets/note_float.py`
+**文件：** `ui/widgets/card_flow.py`, `ui/widgets/note_card.py`, `ui/widgets/note_float.py`, `ui/widgets/task_note_card.py`, `ui/widgets/task_note_float.py`
 
 **职责：**
 - CardFlowWidget：手动 positioning 自适应网格容器，支持拖拽排序
-- NoteCard：`QFrame` 子类，显示标题/内容摘要/颜色/标签/时间，支持浮动开关
-- NoteFloatWindow：无边框置顶悬浮窗，可拖拽移动、快速切换颜色
-- 拖拽排序：自定义排序模式下，鼠标拖拽 → 松手计算目标网格位置 → 更新 sort_order
+- NoteCard：普通笔记卡片，显示标题/摘要/颜色/标签/浮动开关
+- NoteFloatWindow：无边框置顶悬浮窗，可拖拽、锁/解锁、图片自适应、字体颜色
+- TaskNoteCard：任务笔记勾选框清单卡片，点击切换完成状态
+- TaskNoteFloat：任务笔记交互式悬浮窗，勾选实时同步数据库
 
 **依赖：** 无（纯 UI 组件）
 
@@ -587,7 +593,7 @@ def execute_action(task: dict):
 - 顶部筛选下拉框（全部 / 进行中 / 已过期 / 已停用）
 - [+ 新建任务] 按钮 → TaskEditor (QDialog)
 - 双击任务 → TaskEditor 编辑
-- TaskEditor：表单编辑任务名、描述、时间规则、动作类型、动作参数
+- TaskEditor：表单编辑任务名、描述、时间规则、动作类型。弹窗提醒动作为文本编辑+插入图片（非文件选择）
 - 提醒弹窗：无边框置顶，显示任务名 + 说明 + [知道了] 按钮
 
 **依赖：** M02（页面注册）, M05.1（TaskStore）, M05.2（TaskScheduler）
@@ -740,12 +746,13 @@ class BackupManager(QObject):
 **职责：**
 - 配置所有用户可调参数：
   - 最大剪贴板条数
+  - 自动删除超期剪贴内容
   - 备份间隔 / 保留版本数
-  - 热键组合
-  - 深色/浅色主题切换
+  - 热键组合（编辑时自动暂停全局热键防冲突）
+  - 主题切换（中文名、实时生效、禁用滚轮）
   - 隐私过滤正则列表（增删）
   - 是否关闭到托盘
-  - 笔记字体大小
+  - 开机自启动
 
 **依赖：** M00（QSettings 读写）, M02（页面注册）
 
@@ -859,7 +866,7 @@ TaskScheduler 后台线程（每秒轮询）
 QTimer 触发
   → BackupManager.backup()
   → 复制 clipboard.db, notes.db, tasks.db
-  → %APPDATA%/InfoVault/backups/backup_<timestamp>/
+  → %APPDATA%/trove/backups/backup_<timestamp>/
   → 清理超过 BACKUP_MAX_VERSIONS 的旧备份
 ```
 

@@ -79,6 +79,12 @@ NotesMigrations = {
     4: [
         "ALTER TABLE notes ADD COLUMN font_color TEXT DEFAULT '#000000'",
     ],
+    5: [
+        "ALTER TABLE notes ADD COLUMN is_deleted INTEGER DEFAULT 0",
+        "ALTER TABLE notes ADD COLUMN note_type TEXT DEFAULT 'normal'",
+        "ALTER TABLE notes ADD COLUMN task_schedule TEXT DEFAULT ''",
+        "ALTER TABLE notes ADD COLUMN auto_startup INTEGER DEFAULT 0",
+    ],
 }
 
 TaskMigrations = {
