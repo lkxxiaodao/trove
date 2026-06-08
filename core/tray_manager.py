@@ -134,7 +134,8 @@ class TrayManager(QObject):
 
     # ---- 全局热键 ----
     def setup_hotkeys(self, config: AppConfig,
-                      on_search=None, on_new_note=None, on_paste=None):
+                      on_search=None, on_new_note=None, on_paste=None,
+                      on_exit_ghost=None):
         """注册全局热键。"""
         if self._hotkey_window:
             self.unregister_all()
@@ -168,10 +169,18 @@ class TrayManager(QObject):
             if user32.RegisterHotKey(hwnd, hid, paste_mod, paste_vk):
                 self._hotkey_ids[hid] = ("paste", on_paste)
 
-    def refresh_hotkeys(self, config: AppConfig, on_search=None, on_new_note=None):
+        ghost_mod, ghost_vk = _parse_hotkey(config.HOTKEY_EXIT_GHOST)
+        if ghost_vk and on_exit_ghost:
+            hid = self._next_hotkey_id
+            self._next_hotkey_id += 1
+            if user32.RegisterHotKey(hwnd, hid, ghost_mod, ghost_vk):
+                self._hotkey_ids[hid] = ("exit_ghost", on_exit_ghost)
+
+    def refresh_hotkeys(self, config: AppConfig, on_search=None, on_new_note=None,
+                       on_paste=None, on_exit_ghost=None):
         """更新热键注册（设置变更后调用）。"""
         self.unregister_all()
-        self.setup_hotkeys(config, on_search, on_new_note)
+        self.setup_hotkeys(config, on_search, on_new_note, on_paste, on_exit_ghost)
 
     def unregister_all(self):
         """注销所有热键。"""

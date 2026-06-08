@@ -20,12 +20,14 @@ class NoteCard(QFrame):
     double_clicked = Signal(int)
     float_toggled = Signal(int, bool)
     delete_requested = Signal(int)
+    ghost_exit_requested = Signal(int)  # 点击幽灵按钮时发射
 
     def __init__(self, note_data: dict, parent=None):
         super().__init__(parent)
         self._note_id = note_data["id"]
         self._note_data = note_data
         self._is_floating = bool(note_data.get("is_floating", 0))
+        self._is_ghost = False  # 幽灵模式指示（由 NotePage 设置）
         self._select_mode = False
 
         self.setFixedSize(220, 150)
@@ -137,16 +139,7 @@ class NoteCard(QFrame):
         color = d.get("color") or "#FFFFFF"
         font_color = d.get("font_color") or "#000000"
         self._color_bar.setStyleSheet(f"border-radius: 2px; background: {color};")
-        self.setStyleSheet(f"""
-            NoteCard {{
-                background: {color};
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }}
-            NoteCard:hover {{
-                border-color: #4a9eff;
-            }}
-        """)
+        self._refresh_border()
         # 应用字体颜色
         self._title_label.setStyleSheet(f"color: {font_color};")
         self._content_label.setStyleSheet(f"color: {font_color}; opacity: 0.7; font-size: 12px; padding-top: 2px;")
@@ -181,9 +174,13 @@ class NoteCard(QFrame):
 
     def _on_float_click(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._is_floating = not self._is_floating
-            self._apply_float_style()
-            self.float_toggled.emit(self._note_id, self._is_floating)
+            if self._is_ghost:
+                # 幽灵模式下点击 → 退出幽灵模式
+                self.ghost_exit_requested.emit(self._note_id)
+            else:
+                self._is_floating = not self._is_floating
+                self._apply_float_style()
+                self.float_toggled.emit(self._note_id, self._is_floating)
 
     def _on_del_click(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -191,8 +188,24 @@ class NoteCard(QFrame):
 
     def _apply_float_style(self):
         """刷新浮动按钮的文字和样式。"""
-        if self._is_floating:
+        if self._is_ghost:
+            self._float_btn.setText("👻")
+            self._float_btn.setToolTip("幽灵模式中 — 点击退出幽灵模式")
+            self._float_btn.setStyleSheet("""
+                QLabel {
+                    border: none;
+                    font-size: 14px;
+                    background: transparent;
+                    padding: 2px;
+                }
+                QLabel:hover {
+                    background: rgba(128, 0, 128, 0.15);
+                    border-radius: 4px;
+                }
+            """)
+        elif self._is_floating:
             self._float_btn.setText("📌")
+            self._float_btn.setToolTip("取消悬浮")
             self._float_btn.setStyleSheet("""
                 QLabel {
                     border: none;
@@ -207,6 +220,7 @@ class NoteCard(QFrame):
             """)
         else:
             self._float_btn.setText("📍")
+            self._float_btn.setToolTip("悬浮置顶")
             self._float_btn.setStyleSheet("""
                 QLabel {
                     border: none;
@@ -225,9 +239,15 @@ class NoteCard(QFrame):
         self._is_floating = floating
         self._apply_float_style()
 
+    def set_ghost_state(self, ghost: bool):
+        """外部设置幽灵状态指示器（不触发信号）。"""
+        self._is_ghost = ghost
+        self._apply_float_style()
+
     def update_data(self, note_data: dict):
         self._note_data = note_data
         self._is_floating = bool(note_data.get("is_floating", 0))
+        self._is_ghost = False  # 重置幽灵状态，由 NotePage 重新同步
         self._apply_data()
 
     def mouseDoubleClickEvent(self, event):
@@ -238,7 +258,26 @@ class NoteCard(QFrame):
     def mousePressEvent(self, event):
         if self._select_mode and event.button() == Qt.MouseButton.LeftButton:
             self._check_box.setChecked(not self._check_box.isChecked())
+            self._refresh_border()
         super().mousePressEvent(event)
+
+    def _refresh_border(self):
+        """刷新选择模式下的边框高亮。"""
+        d = self._note_data
+        color = d.get("color") or "#FFFFFF"
+        border_style = "1px solid #ddd"
+        if self._select_mode and self._check_box.isChecked():
+            border_style = "3px solid #1a73e8"
+        self.setStyleSheet(f"""
+            NoteCard {{
+                background: {color};
+                border: {border_style};
+                border-radius: 8px;
+            }}
+            NoteCard:hover {{
+                border-color: #4a9eff;
+            }}
+        """)
 
     # ---- 选择模式 ----
 
@@ -249,6 +288,8 @@ class NoteCard(QFrame):
         self._del_btn.setVisible(not enabled)
         if not enabled:
             self._check_box.setChecked(False)
+        # 刷新边框以显示/隐藏选中高亮
+        self._refresh_border()
 
     def is_checked(self) -> bool:
         return self._check_box.isChecked()

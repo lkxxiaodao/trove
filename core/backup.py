@@ -1,33 +1,27 @@
 """备份系统 - BackupManager。
 
 功能：
-- QTimer 定时备份 → 按时间戳创建子目录，复制 .db 文件
-- 自动清理超过保留版本数的旧备份
-- 手动备份：打包为 ZIP
-- 手动恢复：从 ZIP 或文件夹恢复
+- 自动备份：按间隔创建独立命名的备份文件（clipboard/notes/tasks）
+- 手动备份：用户触发，命名含时间戳
+- 恢复：选择备份文件，自动识别类型，仅恢复对应模块数据
+- 清理：超过保留版本数的旧备份自动删除
 """
 
 import os
 import shutil
-import zipfile
 import time
 import re
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from config import AppConfig
 
+FILE_PREFIX = {"clipboard": "clipboard_backup", "notes": "notes_backup", "tasks": "tasks_backup"}
+
 
 class BackupManager(QObject):
-    """备份管理器。
+    """备份管理器。"""
 
-    用法:
-        mgr = BackupManager(config)
-        mgr.start_auto_backup()
-        # ... 应用运行中 ...
-        mgr.manual_backup("/path/to/backup.zip")
-    """
-
-    backup_completed = Signal(bool, str)  # 成功/失败, 消息
+    backup_completed = Signal(bool, str)
 
     def __init__(self, config: AppConfig):
         super().__init__()
@@ -36,7 +30,6 @@ class BackupManager(QObject):
 
     # ---- 自动备份 ----
     def start_auto_backup(self):
-        """启动定时备份。"""
         if self._timer:
             return
         interval_ms = self._config.BACKUP_INTERVAL_MIN * 60 * 1000
@@ -45,68 +38,79 @@ class BackupManager(QObject):
         self._timer.start(interval_ms)
 
     def stop_auto_backup(self):
-        """停止定时备份。"""
         if self._timer:
             self._timer.stop()
             self._timer = None
 
     def reschedule(self):
-        """重新设置定时器间隔（配置变更后调用）。"""
         self.stop_auto_backup()
         self.start_auto_backup()
 
     def _auto_backup(self):
-        """执行一次自动备份。"""
         try:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            dest = os.path.join(self._config.BACKUP_DIR, f"auto_{timestamp}")
-            os.makedirs(dest, exist_ok=True)
-            self._copy_files(dest)
+            self._do_backup("auto")
             self._cleanup_old()
-            self.backup_completed.emit(True, f"自动备份完成: {dest}")
+            self.backup_completed.emit(True, "自动备份完成")
         except Exception as e:
             self.backup_completed.emit(False, f"自动备份失败: {e}")
 
     # ---- 手动备份 ----
-    def manual_backup(self, dest_zip: str) -> bool:
-        """手动打包为 ZIP 文件。"""
+    def manual_backup(self) -> bool:
         try:
-            with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-                for path in self._source_files():
-                    if os.path.exists(path):
-                        zf.write(path, os.path.basename(path))
-            self.backup_completed.emit(True, f"手动备份完成: {dest_zip}")
+            self._do_backup("manual")
+            self.backup_completed.emit(True, "手动备份完成")
             return True
         except Exception as e:
             self.backup_completed.emit(False, f"手动备份失败: {e}")
             return False
 
+    def _do_backup(self, tag: str):
+        """执行备份：为三个模块各创建一个独立备份文件。"""
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        dest_dir = self._config.BACKUP_DIR
+        os.makedirs(dest_dir, exist_ok=True)
+
+        sources = {
+            "clipboard": os.path.join(self._config.DATA_DIR, "clipboard.db"),
+            "notes": os.path.join(self._config.DATA_DIR, "notes.db"),
+            "tasks": os.path.join(self._config.DATA_DIR, "tasks.db"),
+        }
+        for key, src in sources.items():
+            if os.path.exists(src):
+                fname = f"{FILE_PREFIX[key]}_{tag}_{ts}.db"
+                shutil.copy2(src, os.path.join(dest_dir, fname))
+
     # ---- 恢复 ----
-    def restore(self, source: str) -> bool:
-        """从 ZIP 或文件夹恢复数据。
+    def restore(self, backup_path: str) -> bool:
+        """从指定备份文件恢复对应模块数据。自动识别文件类型。"""
+        fname = os.path.basename(backup_path)
+        # 识别类型
+        module_key = None
+        for key, prefix in FILE_PREFIX.items():
+            if fname.startswith(prefix):
+                module_key = key
+                break
+        if not module_key:
+            self.backup_completed.emit(False, "无法识别备份文件类型")
+            return False
 
-        恢复前会先备份当前数据。
-        """
+        module_name = {"clipboard": "剪贴板", "notes": "笔记", "tasks": "定时任务"}[module_key]
+        db_name = f"{module_key}.db"
+        target = os.path.join(self._config.DATA_DIR, db_name)
+
         try:
-            # 先备份当前数据
+            # 恢复前先备份当前数据
             ts = time.strftime("%Y%m%d_%H%M%S")
-            pre_restore = os.path.join(self._config.BACKUP_DIR, f"pre_restore_{ts}")
-            os.makedirs(pre_restore, exist_ok=True)
-            self._copy_files(pre_restore)
+            if os.path.exists(target):
+                pre_bak = os.path.join(
+                    self._config.BACKUP_DIR,
+                    f"{FILE_PREFIX[module_key]}_pre_restore_{ts}.db"
+                )
+                shutil.copy2(target, pre_bak)
 
-            if source.endswith(".zip"):
-                # 从 ZIP 恢复
-                with zipfile.ZipFile(source, "r") as zf:
-                    zf.extractall(self._config.DATA_DIR)
-            else:
-                # 从文件夹恢复
-                for fname in ["clipboard.db", "notes.db", "tasks.db"]:
-                    src = os.path.join(source, fname)
-                    if os.path.exists(src):
-                        dst = os.path.join(self._config.DATA_DIR, fname)
-                        shutil.copy2(src, dst)
-
-            self.backup_completed.emit(True, f"恢复完成。恢复前数据已备份至: {pre_restore}")
+            # 复制备份文件覆盖当前数据
+            shutil.copy2(backup_path, target)
+            self.backup_completed.emit(True, f"{module_name}数据恢复成功")
             return True
         except Exception as e:
             self.backup_completed.emit(False, f"恢复失败: {e}")
@@ -114,34 +118,21 @@ class BackupManager(QObject):
 
     # ---- 清理 ----
     def _cleanup_old(self):
-        """清理超过保留版本数的旧备份。"""
-        pattern = re.compile(r"^auto_\d{8}_\d{6}$")
-        backups = []
-        for name in os.listdir(self._config.BACKUP_DIR):
-            full = os.path.join(self._config.BACKUP_DIR, name)
-            if os.path.isdir(full) and pattern.match(name):
-                backups.append(full)
-        backups.sort(reverse=True)  # 新在前
-
-        max_versions = self._config.BACKUP_MAX_VERSIONS
-        for old in backups[max_versions:]:
-            try:
-                shutil.rmtree(old)
-            except Exception:
-                pass
-
-    # ---- 工具方法 ----
-    def _source_files(self) -> list[str]:
-        """返回需要备份的源文件路径列表。"""
-        data = self._config.DATA_DIR
-        return [
-            os.path.join(data, "clipboard.db"),
-            os.path.join(data, "notes.db"),
-            os.path.join(data, "tasks.db"),
-        ]
-
-    def _copy_files(self, dest_dir: str):
-        """将源文件复制到目标目录。"""
-        for src in self._source_files():
-            if os.path.exists(src):
-                shutil.copy2(src, dest_dir)
+        """清理超过保留版本数的旧备份（每个模块独立计数）。"""
+        dest_dir = self._config.BACKUP_DIR
+        if not os.path.isdir(dest_dir):
+            return
+        max_ver = self._config.BACKUP_MAX_VERSIONS
+        for key, prefix in FILE_PREFIX.items():
+            pattern = re.compile(rf"^{prefix}_auto_\d{{8}}_\d{{6}}\.db$")
+            files = []
+            for fname in os.listdir(dest_dir):
+                if pattern.match(fname):
+                    full = os.path.join(dest_dir, fname)
+                    files.append((os.path.getmtime(full), full))
+            files.sort(reverse=True)  # 新在前
+            for _, p in files[max_ver:]:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QPushButton, QSizeGrip, QApplication, QColorDialog, QMenu,
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QEvent
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QEvent, QTimer
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPalette, QPixmap
 
 from config import AppConfig
@@ -38,6 +38,8 @@ class NoteFloatWindow(QWidget):
 
     unfloated = Signal(int)
     edit_requested = Signal(int)
+    content_changed = Signal(int, str)  # note_id, new_content
+    ghost_changed = Signal(int, bool)  # note_id, is_ghost
 
     @property
     def COLORS(self):
@@ -60,7 +62,11 @@ class NoteFloatWindow(QWidget):
         self._resize_edge = None
         self._resize_start_geo = None
         self._resize_start_pos = None
-        self._is_locked = False  # 默认解锁状态
+        self._is_locked = False
+        self._is_ghost = False  # 幽灵模式（点击穿透）
+        self._save_timer = QTimer()
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._do_auto_save)
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setMinimumSize(180, 120)
@@ -128,6 +134,25 @@ class NoteFloatWindow(QWidget):
         custom_btn.clicked.connect(self._on_custom_color)
         tb_layout.addWidget(custom_btn)
 
+        # 透明度调控（-/+ 按钮）
+        self._opacity_label = QLabel("100%")
+        self._opacity_label.setFixedWidth(30)
+        self._opacity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._opacity_label.setStyleSheet("color: #888; font-size: 10px; background: transparent;")
+        tb_layout.addWidget(self._opacity_label)
+
+        minus_btn = QPushButton("−")
+        minus_btn.setFixedSize(16, 16)
+        minus_btn.setStyleSheet("QPushButton { border: 1px solid #ccc; border-radius: 3px; font-size: 10px; padding: 0; } QPushButton:hover { background: #eee; }")
+        minus_btn.clicked.connect(lambda: self._adjust_opacity(-5))
+        tb_layout.addWidget(minus_btn)
+
+        plus_btn = QPushButton("+")
+        plus_btn.setFixedSize(16, 16)
+        plus_btn.setStyleSheet("QPushButton { border: 1px solid #ccc; border-radius: 3px; font-size: 10px; padding: 0; } QPushButton:hover { background: #eee; }")
+        plus_btn.clicked.connect(lambda: self._adjust_opacity(5))
+        tb_layout.addWidget(plus_btn)
+
         # 关闭按钮（QLabel 模拟，确保 ✕ 正常显示）
         close_btn = QLabel("✕")
         close_btn.setFixedSize(24, 24)
@@ -168,6 +193,7 @@ class NoteFloatWindow(QWidget):
         self._content_edit.document().setDefaultStyleSheet("img { max-width: 100%; height: auto; }")
         self._content_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._content_edit.customContextMenuRequested.connect(self._on_context_menu)
+        self._content_edit.textChanged.connect(self._on_content_changed)
         main_layout.addWidget(self._content_edit, 1)
 
         # ---- 底部：锁 + 标签 + 调整手柄 ----
@@ -203,6 +229,16 @@ class NoteFloatWindow(QWidget):
 
         # 刷新锁图标
         self._refresh_lock_icon()
+
+    def _on_content_changed(self):
+        """内容变化时启动防抖定时器，500ms 后自动保存。"""
+        self._save_timer.start(500)
+
+    def _do_auto_save(self):
+        """将当前内容写回数据库。"""
+        content = self._content_edit.toHtml() if _is_html(self._note_data.get("content", "")) else self._content_edit.toPlainText()
+        self._note_data["content"] = content
+        self.content_changed.emit(self._note_id, content)
 
     def _apply_data(self):
         self._title_label.setText(self._note_data.get("title", "未命名"))
@@ -247,6 +283,13 @@ class NoteFloatWindow(QWidget):
         self._note_data["font_color"] = font
         self._apply_bg_color(bg, font)
 
+    def _adjust_opacity(self, delta: int):
+        """按步长调整窗口透明度（20%~100%）。"""
+        current = round(self.windowOpacity() * 100)
+        new_val = max(20, min(100, current + delta))
+        self.setWindowOpacity(new_val / 100.0)
+        self._opacity_label.setText(f"{new_val}%")
+
     def _on_custom_color(self):
         """打开取色器选择自定义背景色。"""
         current = QColor(self._note_data.get("color", "#FFFFFF"))
@@ -283,6 +326,9 @@ class NoteFloatWindow(QWidget):
         menu = QMenu(self)
         edit_action = menu.addAction("编辑")
         font_color_action = menu.addAction("更改字体颜色")
+        ghost_action = menu.addAction("幽灵模式")
+        ghost_action.setCheckable(True)
+        ghost_action.setChecked(self._is_ghost)
         menu.addSeparator()
         unfollow_action = menu.addAction("取消悬浮")
         action = menu.exec(self._content_edit.mapToGlobal(pos))
@@ -294,8 +340,39 @@ class NoteFloatWindow(QWidget):
             if color.isValid():
                 self._note_data["font_color"] = color.name()
                 self._apply_bg_color(self._note_data.get("color", "#FFFFFF"), color.name())
+        elif action == ghost_action:
+            self._toggle_ghost()
         elif action == unfollow_action:
             self._on_unfloat()
+
+    def _toggle_ghost(self):
+        """切换幽灵模式（鼠标点击穿透）。"""
+        self._is_ghost = not self._is_ghost
+        self._apply_ghost_flags()
+        self.ghost_changed.emit(self._note_id, self._is_ghost)
+
+    def exit_ghost(self):
+        """退出幽灵模式（供外部调用，如热键或页面按钮）。"""
+        if not self._is_ghost:
+            return
+        self._is_ghost = False
+        self._apply_ghost_flags()
+        self.ghost_changed.emit(self._note_id, False)
+
+    def is_ghost(self) -> bool:
+        """返回当前是否处于幽灵模式。"""
+        return self._is_ghost
+
+    def _apply_ghost_flags(self):
+        """根据 _is_ghost 状态应用/移除 WindowTransparentForInput 标志。"""
+        flags = self.windowFlags()
+        if self._is_ghost:
+            flags |= Qt.WindowType.WindowTransparentForInput
+        else:
+            flags &= ~Qt.WindowType.WindowTransparentForInput
+        self.hide()
+        self.setWindowFlags(flags)
+        self.show()
 
     # ---- 操作 ----
     def _on_unfloat(self):

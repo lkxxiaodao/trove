@@ -590,12 +590,6 @@ class NoteEditor(QDialog):
         else:
             content = self._content_edit.toHtml()
 
-        if self._is_new:
-            note_id = self._store.create(title, content)
-        else:
-            note_id = self._note_data["id"]
-            self._store.update(note_id, title=title, content=content)
-
         # 任务笔记定时设置
         task_schedule = ""
         auto_startup = 0
@@ -620,11 +614,24 @@ class NoteEditor(QDialog):
                 task_schedule = _json.dumps({"type": s_type, "value": s_value}, ensure_ascii=False)
             auto_startup = 1 if self._auto_startup_cb.isChecked() else 0
 
-        self._store.update(note_id, color=self._selected_color,
-                          font_color=self._selected_font_color,
-                          note_type="task" if is_task else "normal",
-                          task_schedule=task_schedule,
-                          auto_startup=auto_startup)
+        note_type = "task" if is_task else "normal"
+
+        if self._is_new:
+            note_id = self._store.create(title, content)
+            self._store.update(note_id, color=self._selected_color,
+                              font_color=self._selected_font_color,
+                              note_type=note_type,
+                              task_schedule=task_schedule,
+                              auto_startup=auto_startup)
+        else:
+            note_id = self._note_data["id"]
+            self._store.update(note_id, title=title, content=content,
+                              color=self._selected_color,
+                              font_color=self._selected_font_color,
+                              note_type=note_type,
+                              task_schedule=task_schedule,
+                              auto_startup=auto_startup)
+
         self._store.set_note_tags(note_id, [self._tag_id] if self._tag_id else [])
         self.saved.emit(note_id)
         self.accept()

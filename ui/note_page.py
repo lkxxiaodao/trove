@@ -41,6 +41,7 @@ class NotePage(QWidget):
         self._font_size = font_size
         self._cards: list = []
         self._float_windows: dict[int, NoteFloatWindow] = {}
+        self._ghost_floats: set[int] = set()  # 当前处于幽灵模式的悬浮窗 note_id
         self._selected_tag_id: int | None = None
         self._selected_color: str | None = None
         self._sort_by = "modified"
@@ -162,6 +163,11 @@ class NotePage(QWidget):
         self._tag_bar.setAlignment(Qt.AlignmentFlag.AlignLeft)
         main_layout.addLayout(self._tag_bar)
 
+        # ---- 幽灵模式管理栏 ----
+        self._ghost_bar = QHBoxLayout()
+        self._ghost_bar.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        main_layout.addLayout(self._ghost_bar)
+
         # ---- 卡片容器 ----
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
@@ -225,8 +231,11 @@ class NotePage(QWidget):
         if self._current_tab == "trash":
             notes = self._store.get_trashed()
             for note in notes:
-                card = NoteCard(note)
-                card.set_select_mode(True)  # 回收站始终选择模式
+                if note.get("note_type") == "task":
+                    card = TaskNoteCard(note)
+                else:
+                    card = NoteCard(note)
+                card.set_select_mode(True)
                 self._cards.append(card)
                 self._card_flow.add_card(card)
         else:
@@ -237,24 +246,31 @@ class NotePage(QWidget):
                 note_type="task" if self._current_tab == "task" else "normal",
             )
             for note in notes:
+                nid = note["id"]
                 if self._current_tab == "task":
                     card = TaskNoteCard(note)
                     card.double_clicked.connect(self._on_edit)
                     card.float_toggled.connect(self._on_float_toggle)
                     card.delete_requested.connect(self._on_delete_single)
+                    card.ghost_exit_requested.connect(self._on_card_ghost_exit)
                     card.item_checked.connect(self._on_task_item_checked)
                 else:
                     card = NoteCard(note)
                     card.double_clicked.connect(self._on_edit)
                     card.float_toggled.connect(self._on_float_toggle)
                     card.delete_requested.connect(self._on_delete_single)
+                    card.ghost_exit_requested.connect(self._on_card_ghost_exit)
                 if self._batch_mode:
                     card.set_select_mode(True)
+                # 同步幽灵状态指示器
+                if nid in self._ghost_floats:
+                    card.set_ghost_state(True)
                 self._cards.append(card)
                 self._card_flow.add_card(card)
 
         self._card_flow.layout_cards()
         self._refresh_tag_bar()
+        self._refresh_ghost_bar()
 
     def _refresh_tag_bar(self):
         while self._tag_bar.count():
@@ -472,15 +488,25 @@ class NotePage(QWidget):
         self._cards.clear()
         notes = self._store.search(text.strip())
         for note in notes:
-            card = NoteCard(note)
+            nid = note["id"]
+            if note.get("note_type") == "task":
+                card = TaskNoteCard(note)
+                card.item_checked.connect(self._on_task_item_checked)
+            else:
+                card = NoteCard(note)
             card.double_clicked.connect(self._on_edit)
             card.float_toggled.connect(self._on_float_toggle)
             card.delete_requested.connect(self._on_delete_single)
+            card.ghost_exit_requested.connect(self._on_card_ghost_exit)
             if self._batch_mode:
                 card.set_select_mode(True)
+            # 同步幽灵状态指示器
+            if nid in self._ghost_floats:
+                card.set_ghost_state(True)
             self._cards.append(card)
             self._card_flow.add_card(card)
         self._card_flow.layout_cards()
+        self._refresh_ghost_bar()
 
     # ---- 操作 ----
     def _on_new(self):
@@ -553,7 +579,13 @@ class NotePage(QWidget):
             win = NoteFloatWindow(note, self._font_size)
             win.unfloated.connect(self._on_float_window_closed)
             win.edit_requested.connect(self._on_edit)
+            win.content_changed.connect(self._on_float_content_changed)
+        win.ghost_changed.connect(self._on_ghost_changed)
         self._float_windows[note_id] = win
+        # 同步初始幽灵状态
+        if win.is_ghost():
+            self._ghost_floats.add(note_id)
+            self._refresh_ghost_bar()
 
     def _hide_float_window(self, note_id: int):
         if note_id in self._float_windows:
@@ -565,11 +597,128 @@ class NotePage(QWidget):
         if note_id in self._float_windows:
             self._float_windows[note_id].close()
             del self._float_windows[note_id]
+        # 清理幽灵状态
+        self._ghost_floats.discard(note_id)
+        self._refresh_ghost_bar()
         # 更新卡片状态
         for card in self._cards:
             if card._note_id == note_id:
                 card.set_floating_state(False)
+                card.set_ghost_state(False)
                 break
+
+    def _on_float_content_changed(self, note_id: int, content: str):
+        """悬浮窗内容自动保存到数据库并同步卡片。"""
+        self._store.update(note_id, content=content)
+        for card in self._cards:
+            if card._note_id == note_id:
+                card.update_data(self._store.get(note_id))
+                break
+
+    def _on_ghost_changed(self, note_id: int, is_ghost: bool):
+        """悬浮窗幽灵模式状态变更回调。"""
+        if is_ghost:
+            self._ghost_floats.add(note_id)
+        else:
+            self._ghost_floats.discard(note_id)
+        self._refresh_ghost_bar()
+        # 同步卡片指示器
+        for card in self._cards:
+            if card._note_id == note_id:
+                card.set_ghost_state(is_ghost)
+                break
+
+    def _on_card_ghost_exit(self, note_id: int):
+        """卡片幽灵按钮点击 → 退出该笔记悬浮窗的幽灵模式。"""
+        self.exit_ghost(note_id)
+
+    def exit_ghost(self, note_id: int):
+        """退出指定笔记悬浮窗的幽灵模式。"""
+        if note_id in self._float_windows:
+            self._float_windows[note_id].exit_ghost()
+
+    def exit_all_ghost(self):
+        """退出所有幽灵模式悬浮窗（热键/全部退出按钮调用）。"""
+        for nid in list(self._ghost_floats):
+            if nid in self._float_windows:
+                self._float_windows[nid].exit_ghost()
+
+    def _refresh_ghost_bar(self):
+        """刷新幽灵模式管理栏。"""
+        # 清空
+        while self._ghost_bar.count():
+            child = self._ghost_bar.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if not self._ghost_floats:
+            return
+
+        # 幽灵图标 + 标签
+        icon_label = QLabel("👻")
+        icon_label.setStyleSheet("font-size: 13px; padding: 0 2px;")
+        self._ghost_bar.addWidget(icon_label)
+
+        title_label = QLabel("幽灵模式中")
+        title_label.setStyleSheet("color: #7b1fa2; font-size: 11px; font-weight: bold; padding: 0 4px;")
+        self._ghost_bar.addWidget(title_label)
+
+        sep = QLabel("·")
+        sep.setStyleSheet("color: #ccc; padding: 0 2px;")
+        self._ghost_bar.addWidget(sep)
+
+        # 每个幽灵模式悬浮窗显示为可关闭的 chip
+        for nid in sorted(self._ghost_floats):
+            note = self._store.get(nid)
+            if not note:
+                continue
+            title = note.get("title", "未命名")[:8]
+            # 用 QLabel 模拟 chip
+            chip = QLabel(f" {title} ✕ ")
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setToolTip(f"点击退出「{note.get('title', '未命名')}」的幽灵模式")
+            chip.setStyleSheet("""
+                QLabel {
+                    background: rgba(123, 31, 162, 0.1);
+                    color: #7b1fa2;
+                    border: 1px solid rgba(123, 31, 162, 0.3);
+                    border-radius: 8px;
+                    padding: 2px 6px;
+                    font-size: 11px;
+                }
+                QLabel:hover {
+                    background: rgba(123, 31, 162, 0.2);
+                    border-color: #7b1fa2;
+                }
+            """)
+            chip.mousePressEvent = lambda e, nid=nid: self.exit_ghost(nid)
+            self._ghost_bar.addWidget(chip)
+
+        self._ghost_bar.addSpacing(6)
+
+        # "全部退出" 按钮
+        exit_all_btn = QPushButton("全部退出")
+        exit_all_btn.setFixedHeight(22)
+        exit_all_btn.setMinimumWidth(60)
+        exit_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exit_all_btn.setStyleSheet("""
+            QPushButton {
+                background: #7b1fa2;
+                color: #fff;
+                border: none;
+                border-radius: 8px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #9c27b0;
+            }
+        """)
+        exit_all_btn.clicked.connect(self.exit_all_ghost)
+        self._ghost_bar.addWidget(exit_all_btn)
+
+        self._ghost_bar.addStretch()
 
     def _on_task_float_items_changed(self, note_id: int, items: list):
         """任务笔记悬浮窗勾选变更 → 保存 DB + 同步页面卡片。"""
@@ -621,6 +770,7 @@ class NotePage(QWidget):
         floating_notes = self._store.get_floating()
         for note in floating_notes:
             self._show_float_window(note["id"])
+        self._refresh_ghost_bar()
 
     def set_font_size(self, size: int):
         """更新所有普通笔记悬浮窗口的字体大小。"""

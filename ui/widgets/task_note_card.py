@@ -15,6 +15,7 @@ class TaskNoteCard(QFrame):
     double_clicked = Signal(int)
     delete_requested = Signal(int)
     float_toggled = Signal(int, bool)
+    ghost_exit_requested = Signal(int)  # 点击幽灵按钮时发射
     item_checked = Signal(int, int, bool)  # note_id, item_index, checked
 
     def __init__(self, note_data: dict, parent=None):
@@ -24,6 +25,9 @@ class TaskNoteCard(QFrame):
         self._items: list[dict] = []
         self._checkboxes: list[QCheckBox] = []
         self._is_floating = bool(note_data.get("is_floating", 0))
+        self._is_ghost = False  # 幽灵模式指示（由 NotePage 设置）
+        self._select_mode = False
+        self._selected = False
 
         self.setFixedSize(220, 150)
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -89,7 +93,7 @@ class TaskNoteCard(QFrame):
         item_layout.setSpacing(1)
 
         self._checkboxes.clear()
-        for i, item in enumerate(self._items[:4]):
+        for i, item in enumerate(self._items):
             cb = QCheckBox(item["text"])
             cb.setChecked(item.get("checked", False))
             cb.setStyleSheet("font-size: 12px;")
@@ -106,10 +110,11 @@ class TaskNoteCard(QFrame):
         d = self._note_data
         color = d.get("color") or "#FFFFFF"
         font_color = d.get("font_color") or "#000000"
+        border = "3px solid #1a73e8" if self._select_mode and self._selected else "1px solid #ddd"
         self.setStyleSheet(f"""
             TaskNoteCard {{
                 background: {color};
-                border: 1px solid #ddd;
+                border: {border};
                 border-radius: 8px;
             }}
             TaskNoteCard:hover {{
@@ -137,25 +142,98 @@ class TaskNoteCard(QFrame):
 
     def _on_float_click(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._is_floating = not self._is_floating
-            self._float_btn.setText("📌" if self._is_floating else "📍")
-            self._float_btn.setToolTip("取消悬浮" if self._is_floating else "悬浮置顶")
-            self.float_toggled.emit(self._note_id, self._is_floating)
+            if self._is_ghost:
+                # 幽灵模式下点击 → 退出幽灵模式
+                self.ghost_exit_requested.emit(self._note_id)
+            else:
+                self._is_floating = not self._is_floating
+                self._refresh_float_btn()
+                self.float_toggled.emit(self._note_id, self._is_floating)
+
+    def _refresh_float_btn(self):
+        """刷新浮动按钮的文字和样式。"""
+        if self._is_ghost:
+            self._float_btn.setText("👻")
+            self._float_btn.setToolTip("幽灵模式中 — 点击退出幽灵模式")
+            self._float_btn.setStyleSheet("""
+                QLabel {
+                    border: none;
+                    font-size: 14px;
+                    background: transparent;
+                    padding: 2px;
+                }
+                QLabel:hover {
+                    background: rgba(128, 0, 128, 0.15);
+                    border-radius: 4px;
+                }
+            """)
+        elif self._is_floating:
+            self._float_btn.setText("📌")
+            self._float_btn.setToolTip("取消悬浮")
+            self._float_btn.setStyleSheet("""
+                QLabel {
+                    border: none;
+                    font-size: 14px;
+                    background: transparent;
+                    padding: 2px;
+                }
+                QLabel:hover {
+                    background: rgba(0, 0, 0, 0.08);
+                    border-radius: 4px;
+                }
+            """)
+        else:
+            self._float_btn.setText("📍")
+            self._float_btn.setToolTip("悬浮置顶")
+            self._float_btn.setStyleSheet("""
+                QLabel {
+                    border: none;
+                    font-size: 12px;
+                    background: transparent;
+                    padding: 2px;
+                }
+                QLabel:hover {
+                    background: rgba(0, 0, 0, 0.08);
+                    border-radius: 4px;
+                }
+            """)
 
     def mouseDoubleClickEvent(self, event):
-        self.double_clicked.emit(self._note_id)
+        if not self._select_mode:
+            self.double_clicked.emit(self._note_id)
         super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event):
+        if self._select_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._selected = not self._selected
+            self._apply_color()
+        super().mousePressEvent(event)
 
     def set_floating_state(self, floating: bool):
         self._is_floating = floating
-        self._float_btn.setText("📌" if floating else "📍")
+        self._refresh_float_btn()
+
+    def set_ghost_state(self, ghost: bool):
+        """外部设置幽灵状态指示器（不触发信号）。"""
+        self._is_ghost = ghost
+        self._refresh_float_btn()
 
     def get_items(self) -> list[dict]:
         return self._items
 
+    def set_select_mode(self, enabled: bool):
+        """切换选择模式（点击卡片切换选中状态）。"""
+        self._select_mode = enabled
+        self._selected = False
+        self._apply_color()
+
+    def is_checked(self) -> bool:
+        return self._selected
+
     def update_data(self, note_data: dict):
         self._note_data = note_data
         self._is_floating = bool(note_data.get("is_floating", 0))
+        self._is_ghost = False  # 重置幽灵状态，由 NotePage 重新同步
         self._parse_content()
         # 增量更新勾选框状态（避免重建整个 UI）
         for i, cb in enumerate(self._checkboxes):

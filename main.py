@@ -2,20 +2,35 @@
 
 import sys
 import os
+import ctypes
+import ctypes.wintypes
 import logging
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import QTimer, QTranslator, QLibraryInfo
 from config import AppConfig, ensure_directories
 
+# 单实例互斥体句柄（必须存活于整个进程生命周期，否则 Windows 自动释放）
+_single_instance_mutex: ctypes.wintypes.HANDLE | None = None
+
 
 def _suppress_shiboken_noise():
-    """将 C 级 stderr 重定向到 devnull，抑制 Shiboken NoneType 刷屏警告。
-    真实错误仍会写入日志文件，不会丢失。
+    """将 C 级 stderr 重定向到日志文件，抑制 Shiboken NoneType 刷屏警告。
+    日志文件会捕获所有 stderr 输出，便于排查问题。
     """
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, 2)  # 将 fd 2 (stderr) 重定向到 devnull
-    os.close(devnull)
+    # 使用环境变量或默认路径来确定日志目录
+    appdata = os.environ.get("TROVE_DATA_DIR", "")
+    if not appdata:
+        if sys.platform == "win32":
+            appdata = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "trove")
+        else:
+            appdata = os.path.join(os.path.expanduser("~"), ".trove")
+    log_dir = os.path.join(appdata, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    stderr_path = os.path.join(log_dir, "stderr.log")
+    fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    os.dup2(fd, 2)  # 将 fd 2 (stderr) 重定向到日志文件
+    os.close(fd)
 
 
 def setup_logging(log_dir: str) -> logging.Logger:
@@ -43,7 +58,47 @@ def setup_logging(log_dir: str) -> logging.Logger:
     return logger
 
 
+def _try_activate_existing_window() -> bool:
+    """尝试找到已有 trove 窗口并激活。返回 True 表示找到了。"""
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, "trove")
+    if hwnd:
+        SW_RESTORE = 9
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.SetForegroundWindow(hwnd)
+        return True
+    return False
+
+
+def _check_single_instance() -> bool:
+    """检查是否已有实例在运行。返回 True 表示这是唯一实例。
+
+    使用 Windows 命名互斥体（Named Mutex），内核保证跨进程唯一性。
+    互斥体句柄存于模块变量中，进程退出时自动释放。
+    """
+    global _single_instance_mutex
+
+    kernel32 = ctypes.windll.kernel32
+    mutex_name = "Global\\trove_SingleInstance_Mutex_v1"
+    _single_instance_mutex = kernel32.CreateMutexW(None, False, mutex_name)
+    if not _single_instance_mutex:
+        return True  # 创建失败，放行（不应发生）
+
+    last_error = kernel32.GetLastError()
+    if last_error != 183:  # ERROR_ALREADY_EXISTS = 183，没有同名互斥体 → 是首个实例
+        return True
+
+    # 已有实例在运行
+    _try_activate_existing_window()
+    return False
+
+
 def main() -> int:
+    # ---- 单实例检查（必须在创建 QApplication 之前） ----
+    if not _check_single_instance():
+        return 0
+
     _suppress_shiboken_noise()
     app = QApplication(sys.argv)
     app.setApplicationName("trove")
@@ -194,7 +249,12 @@ def main() -> int:
         """热键回调：显示粘贴选择弹窗。"""
         paste_popup.show_near_cursor()
 
-    tray_mgr.setup_hotkeys(config, on_search=show_search, on_new_note=new_note_hotkey, on_paste=show_paste_popup)
+    def exit_all_ghost():
+        """热键回调：退出所有幽灵模式悬浮窗。"""
+        note_page.exit_all_ghost()
+
+    tray_mgr.setup_hotkeys(config, on_search=show_search, on_new_note=new_note_hotkey,
+                           on_paste=show_paste_popup, on_exit_ghost=exit_all_ghost)
     tray_mgr.setup_tray(app, window, on_new_note=new_note_hotkey, on_quit=app.quit)
 
     # ---- 热键与设置的冲突处理 ----
@@ -204,7 +264,8 @@ def main() -> int:
             tray_mgr.unregister_all()
         else:
             tray_mgr.setup_hotkeys(config, on_search=show_search,
-                                   on_new_note=new_note_hotkey, on_paste=show_paste_popup)
+                                   on_new_note=new_note_hotkey, on_paste=show_paste_popup,
+                                   on_exit_ghost=exit_all_ghost)
 
     window.page_changed.connect(on_page_changed)
 

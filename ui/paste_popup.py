@@ -251,7 +251,9 @@ class PastePopup(QWidget):
             clipboard.setText(data.get("content", ""))
 
         self.hide()
-        QTimer.singleShot(80, _send_ctrl_v)
+        # 确保剪贴板操作在事件循环中完成
+        QApplication.instance().processEvents()
+        QTimer.singleShot(150, _send_ctrl_v)
 
 
 def create_paste_popup(clip_store: ClipStore) -> PastePopup:

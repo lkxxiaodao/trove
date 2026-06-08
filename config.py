@@ -100,7 +100,7 @@ class AppConfig:
     # ---- 路径 ----
     def _init_paths(self, base_dir: str):
         self.DATA_DIR = os.path.join(base_dir, "data")
-        self.BACKUP_DIR = os.path.join(base_dir, "backups")
+        self.BACKUP_DIR = self._backend.get("backup/dir", "") or os.path.join(base_dir, "backups")
         self.LOG_DIR = os.path.join(base_dir, "logs")
 
     # ---- 默认值加载 ----
@@ -112,6 +112,7 @@ class AppConfig:
         self.HOTKEY_SEARCH = b.get("hotkey/search", "Ctrl+Alt+V")
         self.HOTKEY_NEW_NOTE = b.get("hotkey/new_note", "Ctrl+Alt+N")
         self.HOTKEY_PASTE = b.get("hotkey/paste", "Ctrl+Shift+V")
+        self.HOTKEY_EXIT_GHOST = b.get("hotkey/exit_ghost", "Ctrl+Alt+G")
         self.CLOSE_TO_TRAY = str(b.get("ui/close_to_tray", "true")).lower() == "true"
         self.THEME = b.get("ui/theme", "light_blue.xml")
         self.PRIVACY_FILTERS = b.get("privacy/filters", [])
@@ -129,6 +130,7 @@ class AppConfig:
         b.set("hotkey/search", self.HOTKEY_SEARCH)
         b.set("hotkey/new_note", self.HOTKEY_NEW_NOTE)
         b.set("hotkey/paste", self.HOTKEY_PASTE)
+        b.set("hotkey/exit_ghost", self.HOTKEY_EXIT_GHOST)
         b.set("ui/close_to_tray", str(self.CLOSE_TO_TRAY).lower())
         b.set("ui/theme", self.THEME)
         b.set("privacy/filters", self.PRIVACY_FILTERS)
@@ -136,6 +138,7 @@ class AppConfig:
         b.set("ui/auto_start", str(self.AUTO_START).lower())
         b.set("clip/auto_delete_days", self.CLIP_AUTO_DELETE_DAYS)
         b.set("note/preset_colors", self.NOTE_PRESET_COLORS)
+        b.set("backup/dir", self.BACKUP_DIR)
         b.save()
 
     # ---- 便捷属性 ----

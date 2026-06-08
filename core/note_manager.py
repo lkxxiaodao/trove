@@ -159,23 +159,28 @@ class NoteStore:
 
     def search(self, keyword: str, tag_ids: list[int] = None,
                limit: int = 50, offset: int = 0) -> list[dict]:
-        """搜索笔记标题和内容（LIKE 模糊匹配）。"""
-        like = f"%{keyword}%"
+        """搜索笔记标题和内容（使用 FTS5 全文搜索）。"""
+        # 将关键词转为 FTS5 前缀匹配查询：每个词后加 * 实现子串匹配
+        words = keyword.split()
+        escaped_words = [w.replace('"', '""') for w in words]
+        fts_query = " ".join(f'"{w}"*' for w in escaped_words)
         if tag_ids:
             placeholders = ",".join("?" * len(tag_ids))
             sql = f"""SELECT DISTINCT n.* FROM notes n
                 JOIN note_tags nt ON n.id = nt.note_id
-                WHERE (n.title LIKE ? OR n.content LIKE ?)
+                JOIN notes_fts fts ON n.id = fts.rowid
+                WHERE notes_fts MATCH ?
                 AND nt.tag_id IN ({placeholders})
                 ORDER BY n.modified DESC
                 LIMIT ? OFFSET ?"""
-            rows = self._db.fetchall(sql, (like, like, *tag_ids, limit, offset))
+            rows = self._db.fetchall(sql, (fts_query, *tag_ids, limit, offset))
         else:
-            sql = """SELECT * FROM notes
-                WHERE title LIKE ? OR content LIKE ?
-                ORDER BY modified DESC
+            sql = """SELECT n.* FROM notes n
+                JOIN notes_fts fts ON n.id = fts.rowid
+                WHERE notes_fts MATCH ?
+                ORDER BY n.modified DESC
                 LIMIT ? OFFSET ?"""
-            rows = self._db.fetchall(sql, (like, like, limit, offset))
+            rows = self._db.fetchall(sql, (fts_query, limit, offset))
         result = []
         for row in rows:
             d = dict(row)

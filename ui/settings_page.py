@@ -9,7 +9,8 @@ import winreg
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QSpinBox,
     QComboBox, QCheckBox, QPushButton, QGroupBox,
-    QScrollArea, QMessageBox, QKeySequenceEdit,
+    QScrollArea, QMessageBox, QKeySequenceEdit, QLineEdit,
+    QFileDialog, QLabel,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
@@ -75,6 +76,32 @@ class SettingsPage(QWidget):
         self._backup_versions = _NoWheelSpinBox()
         self._backup_versions.setRange(1, 50)
         backup_form.addRow("保留版本数", self._backup_versions)
+
+        # 备份路径
+        path_row = QHBoxLayout()
+        self._backup_path_edit = QLineEdit()
+        self._backup_path_edit.setReadOnly(True)
+        self._backup_path_edit.setPlaceholderText("默认: %APPDATA%/trove/backups")
+        path_row.addWidget(self._backup_path_edit, 1)
+        browse_btn = QPushButton("选择目录...")
+        browse_btn.setFixedWidth(80)
+        browse_btn.clicked.connect(self._on_browse_backup_dir)
+        path_row.addWidget(browse_btn)
+        backup_form.addRow("备份位置", path_row)
+
+        # 手动备份 + 恢复 按钮行
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        manual_btn = QPushButton("立即备份")
+        manual_btn.clicked.connect(self._on_manual_backup)
+        action_row.addWidget(manual_btn)
+        restore_btn = QPushButton("恢复数据")
+        restore_btn.clicked.connect(self._on_restore)
+        restore_btn.setStyleSheet("color: #d32f2f;")
+        action_row.addWidget(restore_btn)
+        action_row.addStretch()
+        backup_form.addRow("", action_row)
+
         layout.addWidget(backup_group)
 
         # ---- 热键 ----
@@ -86,6 +113,8 @@ class SettingsPage(QWidget):
         hotkey_form.addRow("新建笔记", self._hotkey_note)
         self._hotkey_paste = QKeySequenceEdit()
         hotkey_form.addRow("粘贴历史", self._hotkey_paste)
+        self._hotkey_exit_ghost = QKeySequenceEdit()
+        hotkey_form.addRow("退出幽灵模式", self._hotkey_exit_ghost)
         layout.addWidget(hotkey_group)
 
         # ---- 外观 ----
@@ -134,9 +163,11 @@ class SettingsPage(QWidget):
         self._clip_auto_delete_days.setValue(c.CLIP_AUTO_DELETE_DAYS)
         self._backup_interval.setValue(c.BACKUP_INTERVAL_MIN)
         self._backup_versions.setValue(c.BACKUP_MAX_VERSIONS)
+        self._backup_path_edit.setText(c.BACKUP_DIR)
         self._hotkey_search.setKeySequence(QKeySequence(c.HOTKEY_SEARCH))
         self._hotkey_note.setKeySequence(QKeySequence(c.HOTKEY_NEW_NOTE))
         self._hotkey_paste.setKeySequence(QKeySequence(c.HOTKEY_PASTE))
+        self._hotkey_exit_ghost.setKeySequence(QKeySequence(c.HOTKEY_EXIT_GHOST))
         self._close_to_tray.setChecked(c.CLOSE_TO_TRAY)
         self._auto_start.setChecked(c.AUTO_START)
         idx = self._theme_combo.findData(c.THEME)
@@ -179,6 +210,15 @@ class SettingsPage(QWidget):
         c.HOTKEY_SEARCH = self._hotkey_search.keySequence().toString()
         c.HOTKEY_NEW_NOTE = self._hotkey_note.keySequence().toString()
         c.HOTKEY_PASTE = self._hotkey_paste.keySequence().toString()
+        c.HOTKEY_EXIT_GHOST = self._hotkey_exit_ghost.keySequence().toString()
+        new_backup_dir = self._backup_path_edit.text().strip()
+        if new_backup_dir and os.path.isdir(new_backup_dir):
+            c.BACKUP_DIR = new_backup_dir
+        elif not new_backup_dir:
+            c.BACKUP_DIR = os.path.join(
+                os.getenv("APPDATA", os.path.expanduser("~")), "trove", "backups"
+            )
+
         c.CLOSE_TO_TRAY = self._close_to_tray.isChecked()
         self.close_to_tray_changed.emit(c.CLOSE_TO_TRAY)
 
@@ -201,6 +241,67 @@ class SettingsPage(QWidget):
             QMessageBox.information(self, "提示", "主题已应用。")
         else:
             QMessageBox.information(self, "提示", "设置已保存。")
+
+    def _on_browse_backup_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "选择备份目录")
+        if path:
+            self._backup_path_edit.setText(path)
+
+    def _on_manual_backup(self):
+        """触发手动备份（三个模块各创建一个备份文件）。"""
+        try:
+            from core.backup import BackupManager
+            mgr = BackupManager(self._config)
+            ok = mgr.manual_backup()
+            if ok:
+                QMessageBox.information(
+                    self, "备份完成",
+                    f"三个模块的备份文件已保存至:\n{self._config.BACKUP_DIR}"
+                )
+        except Exception as e:
+            QMessageBox.warning(self, "备份失败", str(e))
+
+    def _on_restore(self):
+        """选择备份文件恢复对应模块数据。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择备份文件恢复",
+            self._config.BACKUP_DIR if os.path.isdir(self._config.BACKUP_DIR) else "",
+            "备份文件 (*_backup_*.db);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+
+        # 识别模块名
+        fname = os.path.basename(path)
+        module_name = ""
+        if fname.startswith("clipboard"):
+            module_name = "剪贴板"
+        elif fname.startswith("notes"):
+            module_name = "笔记"
+        elif fname.startswith("tasks"):
+            module_name = "定时任务"
+        else:
+            QMessageBox.warning(self, "错误", "无法识别备份文件类型")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认恢复",
+            f"确定要用此备份文件恢复 {module_name} 数据吗？\n\n"
+            f"当前数据将先被备份，然后替换为备份文件中的数据。\n"
+            f"恢复后需要重启软件生效。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            from core.backup import BackupManager
+            mgr = BackupManager(self._config)
+            ok = mgr.restore(path)
+            if ok:
+                QMessageBox.information(self, "恢复完成", f"{module_name}数据已恢复，请重启软件。")
+        except Exception as e:
+            QMessageBox.warning(self, "恢复失败", str(e))
 
 
 def create_page(config: AppConfig = None) -> QWidget:
